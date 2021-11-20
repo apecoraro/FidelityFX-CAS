@@ -40,17 +40,15 @@ class CAS_Sample : public FrameworkWindows
 {
 public:
     CAS_Sample(LPCSTR name);
-    void OnCreate(HWND hWnd);
-    void OnDestroy();
-    void OnRender();
-    bool OnEvent(MSG msg);
-    void OnResize(uint32_t Width, uint32_t Height);
-    void SetFullScreen(bool fullscreen);
-    
-private:
-    Device                m_device;
-    SwapChain             m_swapChain;
+    void OnParseCommandLine(LPSTR lpCmdLine, uint32_t* pWidth, uint32_t* pHeight) override;
+    void OnCreate() override;
+    void OnDestroy() override;
+    void OnRender() override;
+    bool OnEvent(MSG msg) override;
+    void OnResize(bool resizeRender) override;
+    void OnUpdateDisplay() override {};
 
+private:
     GLTFCommon           *m_pGltfLoader;
 
     CAS_Renderer         *m_pNode;
@@ -61,13 +59,9 @@ private:
     float                 m_pitch;
 
     float                 m_time;             // WallClock in seconds.
-    double                m_deltaTime;        // The elapsed time in milliseconds since the previous frame.
-    double                m_lastFrameTime;
 
     bool                  m_bPlay;
     
-    int                   m_currDisplayMode;
-
     // Profiling info for CAS
     int                   m_CASTimingsCurrId;
     float                 m_CASTimings[300];

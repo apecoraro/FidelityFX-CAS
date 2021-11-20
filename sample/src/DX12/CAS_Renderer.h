@@ -34,9 +34,9 @@ class CAS_Renderer
 public:
     struct Spotlight
     {
-        Camera      light;
-        XMFLOAT4    color;
-        float       intensity;
+        Camera        light;
+        math::Vector4 color;
+        float         intensity;
     };
 
     struct State
@@ -98,12 +98,20 @@ private:
     CommandListRing                 m_CommandListRing;
     GPUTimestamps                   m_GPUTimer;
 
+    AsyncPool                       m_asyncPool;
+    // GBuffer and render passes
+    GBuffer                         m_GBuffer;
+    GBufferRenderPass               m_renderPassFullGBuffer;
+    GBufferRenderPass               m_renderPassJustDepthAndHdr;
 
     //gltf passes
     GLTFTexturesAndBuffers         *m_pGLTFTexturesAndBuffers;
     GltfPbrPass                    *m_pGltfPBR;
     GltfDepthPass                  *m_pGltfDepth;
     GltfBBoxPass                   *m_pGltfBBox;
+    Texture                         m_MotionVectorsDepthMap;
+    DSV                             m_MotionVectorsDepthMapDSV;
+    CBV_SRV_UAV                     m_MotionVectorsDepthMapSRV;
 
     // effects
     Bloom                           m_bloom;
@@ -111,30 +119,16 @@ private:
     DownSamplePS                    m_downSample;
     SkyDomeProc                     m_skyDomeProc;
     ToneMapping                     m_toneMapping;
+    TAA                             m_TAA;
     CAS_Filter                      m_CAS;
 
     // GUI
     ImGUI                           m_ImGUI;
 
-    // Temporary render targets
-
-    // depth buffer
-    Texture                         m_depthBuffer;
-    DSV                             m_depthBufferDSV;
-
     // shadowmaps
     Texture                         m_shadowMap;
     DSV                             m_ShadowMapDSV;
     CBV_SRV_UAV                     m_ShadowMapSRV;
-
-    // MSAA RT
-    Texture                         m_HDRMSAA;
-    RTV                             m_HDRRTVMSAA;
-
-    // Resolved RT
-    Texture                         m_HDR;
-    CBV_SRV_UAV                     m_HDRSRV;
-    RTV                             m_HDRRTV;
 
     // Tonemapping RT
     Texture                         m_Tonemap;

@@ -33,7 +33,20 @@ CAS_Sample::CAS_Sample(LPCSTR name) : FrameworkWindows(name)
     m_time = 0;
     m_bPlay = true;
 
-    m_pGltfLoader = NULL;
+    m_pGltfLoader = nullptr;
+}
+
+void CAS_Sample::OnParseCommandLine(LPSTR lpCmdLine, uint32_t* pWidth, uint32_t* pHeight)
+{
+    // set some default values
+    *pWidth = 1920;
+    *pHeight = 1080;
+    m_VsyncEnabled = false;
+    m_isCpuValidationLayerEnabled = true;
+    m_isGpuValidationLayerEnabled = false;
+    m_stablePowerState = false;
+
+    // TODO do we need to support json config file like other samples?
 }
 
 //--------------------------------------------------------------------------------------
@@ -41,19 +54,11 @@ CAS_Sample::CAS_Sample(LPCSTR name) : FrameworkWindows(name)
 // OnCreate
 //
 //--------------------------------------------------------------------------------------
-void CAS_Sample::OnCreate(HWND hWnd)
+void CAS_Sample::OnCreate()
 {
-    // Create Device
-    //
-    m_device.OnCreate("CAS DX12 Sample v1.0", "CAS DX12 Engine v1.0", VALIDATION_ENABLED, hWnd);
-    m_device.CreatePipelineCache();
-
     //init the shader compiler
+    InitDirectXCompiler();
     CreateShaderCache();
-
-    // Create Swapchain
-    //
-    m_swapChain.OnCreate(&m_device, cNumSwapBufs, hWnd);
 
     // Create a instance of the renderer and initialize it, we need to do that for each GPU
     //
@@ -62,7 +67,7 @@ void CAS_Sample::OnCreate(HWND hWnd)
 
     // init GUI (non gfx stuff)
     //
-    ImGUI_Init((void *)hWnd);
+    ImGUI_Init((void *)m_windowHwnd);
 
     // Init Camera, looking at the origin
     //
@@ -78,12 +83,11 @@ void CAS_Sample::OnCreate(HWND hWnd)
     m_state.emmisiveFactor = 1.0f;
     m_state.bDrawLightFrustum = false;
     m_state.bDrawBoundingBoxes = false;
-    m_state.camera.LookAt(m_roll, m_pitch, m_distance, XMVectorSet(0, 0, 0, 0));
+    m_state.camera.LookAt(m_roll, m_pitch, m_distance, math::Vector4(0, 0, 0, 0));
 
     // NOTE: Init render width/height and display mode
     m_state.usePackedMath = false;
     m_state.CASState = CAS_State_NoCas;
-    m_currDisplayMode = 0;
     m_state.renderWidth = 0;
     m_state.renderHeight = 0;
     m_state.sharpenControl = 0.0f;
@@ -92,9 +96,9 @@ void CAS_Sample::OnCreate(HWND hWnd)
     m_state.spotlightCount = 1;
 
     m_state.spotlight[0].intensity = 10.0f;
-    m_state.spotlight[0].color = XMFLOAT4(1.0f, 1.0f, 1.0f, 0.0f);
+    m_state.spotlight[0].color = math::Vector4(1.0f, 1.0f, 1.0f, 0.0f);
     m_state.spotlight[0].light.SetFov(XM_PI / 2.0f, 1024, 1024, 0.1f, 100.0f);
-    m_state.spotlight[0].light.LookAt(XM_PI / 2.0f, 0.58f, 3.5f, XMVectorSet(0, 0, 0, 0));
+    m_state.spotlight[0].light.LookAt(XM_PI / 2.0f, 0.58f, 3.5f, math::Vector4(0, 0, 0, 0));
 
     // Init profiling state
     m_CASTimingsCurrId = 0;
@@ -112,21 +116,14 @@ void CAS_Sample::OnDestroy()
 
     m_device.GPUFlush();
 
-    // Fullscreen state should always be false before exiting the app.
-    m_swapChain.SetFullScreen(false);
-
-    m_pNode->UnloadScene();
-    m_pNode->OnDestroyWindowSizeDependentResources();
-    m_pNode->OnDestroy();
-
     if (m_pNode)
     {
+        m_pNode->UnloadScene();
+        m_pNode->OnDestroyWindowSizeDependentResources();
+        m_pNode->OnDestroy();
         delete m_pNode;
-        m_pNode = 0;
+        m_pNode = nullptr;
     }
-
-    m_swapChain.OnDestroyWindowSizeDependentResources();
-    m_swapChain.OnDestroy();
 
     //shut down the shader compiler
     DestroyShaderCache(&m_device);
@@ -134,10 +131,8 @@ void CAS_Sample::OnDestroy()
     if (m_pGltfLoader)
     {
         delete m_pGltfLoader;
-        m_pGltfLoader = NULL;
+        m_pGltfLoader = nullptr;
     }
-
-    m_device.OnDestroy();
 }
 
 //--------------------------------------------------------------------------------------
@@ -155,59 +150,35 @@ bool CAS_Sample::OnEvent(MSG msg)
 
 //--------------------------------------------------------------------------------------
 //
-// SetFullScreen
-//
-//--------------------------------------------------------------------------------------
-void CAS_Sample::SetFullScreen(bool fullscreen)
-{
-    m_device.GPUFlush();
-
-    m_swapChain.SetFullScreen(fullscreen);
-}
-
-//--------------------------------------------------------------------------------------
-//
 // OnResize
 //
 //--------------------------------------------------------------------------------------
-void CAS_Sample::OnResize(uint32_t width, uint32_t height)
+void CAS_Sample::OnResize(bool resizeRender)
 {
-    if (m_Width != width || m_Height != height)
+    if (resizeRender && m_Width && m_Height)
     {
-        // Flush GPU
-        //
-        m_device.GPUFlush();
-
-        // If resizing but no minimizing
-        //
-        if (m_Width > 0 && m_Height > 0)
+        if (m_pNode != nullptr)
         {
             m_pNode->OnDestroyWindowSizeDependentResources();
-            m_swapChain.OnDestroyWindowSizeDependentResources();
         }
-
-        m_Width = width;
-        m_Height = height;
 
         // NOTE: Reset render width/height and display mode
         {
             std::vector<ResolutionInfo> supportedResolutions = {};
             CAS_Filter::GetSupportedResolutions(m_Width, m_Height, supportedResolutions);
 
-            m_currDisplayMode = 0;
-            m_state.renderWidth = supportedResolutions[m_currDisplayMode].Width;
-            m_state.renderHeight = supportedResolutions[m_currDisplayMode].Height;
+            // TODO what is the intention of this code? The display modes are related to SDR vs HDR
+            // but this code appears to have more to do with scaling than HDR vs SDR mode.
+            m_state.renderWidth = supportedResolutions[m_currentDisplayModeNamesIndex].Width;
+            m_state.renderHeight = supportedResolutions[m_currentDisplayModeNamesIndex].Height;
         }
 
-        // if resizing but not minimizing the recreate it with the new size
-        //
-        if (m_Width > 0 && m_Height > 0)
+        if (m_pNode != nullptr)
         {
-            m_swapChain.OnCreateWindowSizeDependentResources(m_Width, m_Height, false);
             m_pNode->OnCreateWindowSizeDependentResources(&m_swapChain, &m_state, m_Width, m_Height);
         }
     }
-    m_state.camera.SetFov(XM_PI / 4, m_Width, m_Height, 0.1f, 1000.0f);
+    m_state.camera.SetFov(AMD_PI_OVER_4, m_Width, m_Height, 0.1f, 1000.0f);
 }
 
 //--------------------------------------------------------------------------------------
@@ -217,11 +188,8 @@ void CAS_Sample::OnResize(uint32_t width, uint32_t height)
 //--------------------------------------------------------------------------------------
 void CAS_Sample::OnRender()
 {
-    // Get timings
-    //
-    double timeNow = MillisecondsNow();
-    m_deltaTime = timeNow - m_lastFrameTime;
-    m_lastFrameTime = timeNow;
+    // Do any start of frame stuff.
+    BeginFrame();
 
     // Build UI and set the scene state. Note that the rendering of the UI happens later.
     //
@@ -236,6 +204,7 @@ void CAS_Sample::OnRender()
         if (m_pGltfLoader == NULL)
         {
             m_pGltfLoader = new GLTFCommon();
+            // TODO do we need to support loading of other models?
             m_pGltfLoader->Load("..\\media\\DamagedHelmet\\glTF\\", "DamagedHelmet.gltf");
             loadingStage = 0;
         }
@@ -285,32 +254,32 @@ void CAS_Sample::OnRender()
                 case 0:
                     m_state.iblFactor = 1.0f;
                     m_roll = 0.0f; m_pitch = 0.0f; m_distance = 3.5f;
-                    m_state.camera.LookAt(m_roll, m_pitch, m_distance, XMVectorSet(0, 0, 0, 0));
+                    m_state.camera.LookAt(m_roll, m_pitch, m_distance, math::Vector4(0, 0, 0, 0));
                     res = m_pGltfLoader->Load("..\\media\\buster_drone\\", "busterDrone.gltf"); break;
                 case 1:
                     m_state.iblFactor = 1.0f;
                     m_roll = 0.0f; m_pitch = 0.0f; m_distance = 3.5f;
-                    m_state.camera.LookAt(m_roll, m_pitch, m_distance, XMVectorSet(0, 0, 0, 0));
+                    m_state.camera.LookAt(m_roll, m_pitch, m_distance, math::Vector4(0, 0, 0, 0));
                     res = m_pGltfLoader->Load("..\\media\\BoomBox\\glTF\\", "BoomBox.gltf"); break;
                 case 2:
                     m_state.iblFactor = 1.0f;
                     m_roll = 0.0f; m_pitch = 0.0f; m_distance = 3.5f;
-                    m_state.camera.LookAt(m_roll, m_pitch, m_distance, XMVectorSet(0, 0, 0, 0));
+                    m_state.camera.LookAt(m_roll, m_pitch, m_distance, math::Vector4(0, 0, 0, 0));
                     res = m_pGltfLoader->Load("..\\media\\SciFiHelmet\\glTF\\", "SciFiHelmet.gltf"); break;
                 case 3:
                     m_state.iblFactor = 2.0f;
                     m_roll = 0.0f; m_pitch = 0.0f; m_distance = 3.5f;
-                    m_state.camera.LookAt(m_roll, m_pitch, m_distance, XMVectorSet(0, 0, 0, 0));
+                    m_state.camera.LookAt(m_roll, m_pitch, m_distance, math::Vector4(0, 0, 0, 0));
                     res = m_pGltfLoader->Load("..\\media\\DamagedHelmet\\glTF\\", "DamagedHelmet.gltf"); break;
                 case 4:
                     m_state.iblFactor = 0.362f;
                     m_pitch = 0.182035938f; m_roll = 1.92130506f; m_distance = 4.83333349f;
-                    m_state.camera.LookAt(m_roll, m_pitch, m_distance, XMVectorSet(0.703276634f, 1.02280307f, 0.218072295f, 0));
+                    m_state.camera.LookAt(m_roll, m_pitch, m_distance, math::Vector4(0.703276634f, 1.02280307f, 0.218072295f, 0));
                     res = m_pGltfLoader->Load("..\\media\\sponza\\gltf\\", "sponza.gltf"); break;
                 case 5:
                     m_state.iblFactor = 1.0f;
                     m_roll = 0.0f; m_pitch = 0.0f; m_distance = 16.0f;
-                    m_state.camera.LookAt(m_roll, m_pitch, m_distance, XMVectorSet(0, 0, 0, 0));
+                    m_state.camera.LookAt(m_roll, m_pitch, m_distance, math::Vector4(0, 0, 0, 0));
                     res = m_pGltfLoader->Load("..\\media\\MetalRoughSpheres\\glTF\\", "MetalRoughSpheres.gltf"); break;
                 }
 
@@ -341,8 +310,8 @@ void CAS_Sample::OnRender()
             return true;
         };
 
-        int oldDisplayMode = m_currDisplayMode;
-        ImGui::Combo("Render Dim", &m_currDisplayMode, itemsGetter, reinterpret_cast<void*>(&supportedResolutions.front()), static_cast<int>(supportedResolutions.size()));
+        m_previousDisplayModeNamesIndex = m_currentDisplayModeNamesIndex;
+        ImGui::Combo("Render Dim", reinterpret_cast<int*>(&m_currentDisplayModeNamesIndex), itemsGetter, reinterpret_cast<void*>(&supportedResolutions.front()), static_cast<int>(supportedResolutions.size()));
 
         if (m_device.IsFp16Supported())
         {
@@ -373,10 +342,10 @@ void CAS_Sample::OnRender()
             m_state.CASState = CAS_State_SharpenOnly;
         }
 
-        if (oldDisplayMode != m_currDisplayMode || oldCasState != m_state.CASState)
+        if (m_previousDisplayModeNamesIndex != m_currentDisplayModeNamesIndex || oldCasState != m_state.CASState)
         {
-            m_state.renderWidth = supportedResolutions[m_currDisplayMode].Width;
-            m_state.renderHeight = supportedResolutions[m_currDisplayMode].Height;
+            m_state.renderWidth = supportedResolutions[m_currentDisplayModeNamesIndex].Width;
+            m_state.renderHeight = supportedResolutions[m_currentDisplayModeNamesIndex].Height;
 
             m_device.GPUFlush();
             m_pNode->OnDestroyWindowSizeDependentResources();
@@ -494,7 +463,7 @@ void CAS_Sample::OnRender()
     if (m_pGltfLoader)
     {
         m_pGltfLoader->SetAnimationTime(0, m_time);
-        m_pGltfLoader->TransformScene(0, XMMatrixIdentity());
+        m_pGltfLoader->TransformScene(0, math::Matrix4::identity());
     }
 
     m_state.time = m_time;
@@ -503,7 +472,7 @@ void CAS_Sample::OnRender()
     //
     m_pNode->OnRender(&m_state, &m_swapChain);
 
-    m_swapChain.Present();
+    EndFrame();
 }
 
 
@@ -518,10 +487,8 @@ int WINAPI WinMain(HINSTANCE hInstance,
     int nCmdShow)
 {
     LPCSTR Name = "CAS DX12 Sample v1.0";
-    uint32_t Width = 1280;
-    uint32_t Height = 720;
 
     // create new DX sample
-    return RunFramework(hInstance, lpCmdLine, nCmdShow, Width, Height, new CAS_Sample(Name));
+    return RunFramework(hInstance, lpCmdLine, nCmdShow, new CAS_Sample(Name));
 }
 

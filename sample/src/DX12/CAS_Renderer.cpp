@@ -21,8 +21,6 @@
 
 #include "CAS_Renderer.h"
 
-#define USE_SHADOWMASK false
-
 //--------------------------------------------------------------------------------------
 //
 // OnCreate
@@ -53,11 +51,27 @@ void CAS_Renderer::OnCreate(Device* pDevice, SwapChain *pSwapChain)
     // for 4K textures we'll need 100Megs
     m_UploadHeap.OnCreate(pDevice, 100 * 1024 * 1024);    // initialize an upload heap (uses suballocation for faster results)
 
-    // Create the depth buffer view
-    m_resourceViewHeaps.AllocDSVDescriptor(1, &m_depthBufferDSV);
+    // Create GBuffer and render passes
+    //
+    {
+        m_GBuffer.OnCreate(
+            pDevice,
+            &m_resourceViewHeaps,
+            {
+                { GBUFFER_DEPTH, DXGI_FORMAT_D32_FLOAT},
+                { GBUFFER_FORWARD, DXGI_FORMAT_R16G16B16A16_FLOAT},
+                { GBUFFER_MOTION_VECTORS, DXGI_FORMAT_R16G16_FLOAT},
+            },
+            1
+        );
+
+        GBufferFlags fullGBuffer = GBUFFER_DEPTH | GBUFFER_FORWARD | GBUFFER_MOTION_VECTORS;
+        m_renderPassFullGBuffer.OnCreate(&m_GBuffer, fullGBuffer);
+        m_renderPassJustDepthAndHdr.OnCreate(&m_GBuffer, GBUFFER_DEPTH | GBUFFER_FORWARD);
+    }
 
     // Create a Shadowmap atlas to hold 4 cascades/spotlights
-    m_shadowMap.InitDepthStencil(pDevice, "m_pShadowMap", &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32_TYPELESS, 2*1024, 2*1024, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL));
+    m_shadowMap.InitDepthStencil(pDevice, "m_pShadowMap", &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_D32_FLOAT, 2*1024, 2*1024, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL));
     m_resourceViewHeaps.AllocDSVDescriptor(1, &m_ShadowMapDSV);
     m_resourceViewHeaps.AllocCBV_SRV_UAVDescriptor(1, &m_ShadowMapSRV);
     m_shadowMap.CreateDSV(0, &m_ShadowMapDSV);
@@ -69,22 +83,18 @@ void CAS_Renderer::OnCreate(Device* pDevice, SwapChain *pSwapChain)
     m_wireframeBox.OnCreate(pDevice, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool);
     m_downSample.OnCreate(pDevice, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, DXGI_FORMAT_R16G16B16A16_FLOAT);
     m_bloom.OnCreate(pDevice, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, DXGI_FORMAT_R16G16B16A16_FLOAT);
+    m_TAA.OnCreate(pDevice, &m_resourceViewHeaps, &m_VidMemBufferPool, false);
 
     // Create tonemapping pass
     m_toneMapping.OnCreate(pDevice, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, DXGI_FORMAT_R16G16B16A16_FLOAT);
+    m_resourceViewHeaps.AllocRTVDescriptor(1, &m_TonemapRTV);
+    m_resourceViewHeaps.AllocCBV_SRV_UAVDescriptor(1, &m_TonemapSRV);
 
     // Create Cas passes
     m_CAS.OnCreate(pDevice, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, pSwapChain->GetFormat());
 
     // Initialize UI rendering resources
     m_ImGUI.OnCreate(pDevice, &m_UploadHeap, &m_resourceViewHeaps, &m_ConstantBufferRing, pSwapChain->GetFormat());
-
-    m_resourceViewHeaps.AllocRTVDescriptor(1, &m_HDRRTV);
-    m_resourceViewHeaps.AllocRTVDescriptor(1, &m_HDRRTVMSAA);
-    m_resourceViewHeaps.AllocCBV_SRV_UAVDescriptor(1, &m_HDRSRV);
-
-    m_resourceViewHeaps.AllocRTVDescriptor(1, &m_TonemapRTV);
-    m_resourceViewHeaps.AllocCBV_SRV_UAVDescriptor(1, &m_TonemapSRV);
 
     // Make sure upload heap has finished uploading before continuing
 #if (USE_VID_MEM==true)
@@ -100,7 +110,10 @@ void CAS_Renderer::OnCreate(Device* pDevice, SwapChain *pSwapChain)
 //--------------------------------------------------------------------------------------
 void CAS_Renderer::OnDestroy()
 {
+    m_asyncPool.Flush();
+
     m_CAS.OnDestroy();
+    m_TAA.OnDestroy();
     m_toneMapping.OnDestroy();
     m_ImGUI.OnDestroy();
     m_bloom.OnDestroy();
@@ -147,23 +160,17 @@ void CAS_Renderer::OnCreateWindowSizeDependentResources(SwapChain *pSwapChain, S
     m_RectScissor = { 0, 0, static_cast<LONG>(pState->renderWidth), static_cast<LONG>(pState->renderHeight) };
     m_FinalRectScissor = { 0, 0, static_cast<LONG>(Width), static_cast<LONG>(Height) };
 
-    // Create depth buffer
+    // Create GBuffer
     //
-    m_depthBuffer.InitDepthStencil(m_pDevice, "depthbuffer", &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32_TYPELESS, pState->renderWidth, pState->renderHeight, 1, 1, 4, 0, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL | D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE));
-    m_depthBuffer.CreateDSV(0, &m_depthBufferDSV);
+    m_GBuffer.OnCreateWindowSizeDependentResources(pSwapChain, pState->renderWidth, pState->renderHeight);
+    m_renderPassFullGBuffer.OnCreateWindowSizeDependentResources(pState->renderWidth, pState->renderHeight);
+    m_renderPassJustDepthAndHdr.OnCreateWindowSizeDependentResources(pState->renderWidth, pState->renderHeight);
 
-    // Create Texture + RTV with x4 MSAA
-    //
-    CD3DX12_RESOURCE_DESC RDescMSAA = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R16G16B16A16_FLOAT, pState->renderWidth, pState->renderHeight, 1, 1, 4, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-    m_HDRMSAA.InitRenderTarget(m_pDevice, "HDRMSAA", &RDescMSAA, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    m_HDRMSAA.CreateRTV(0, &m_HDRRTVMSAA);
+    // Update bloom, downscaling and CAS effects
+    m_downSample.OnCreateWindowSizeDependentResources(pState->renderWidth, pState->renderHeight, &m_GBuffer.m_HDR, 5); //downsample the HDR texture 5 times
+    m_bloom.OnCreateWindowSizeDependentResources(pState->renderWidth /2 , pState->renderHeight / 2, m_downSample.GetTexture(), 5, &m_GBuffer.m_HDR);
 
-    // Create Texture + RTV, to hold the resolved scene
-    //
-    CD3DX12_RESOURCE_DESC RDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R16G16B16A16_FLOAT, pState->renderWidth, pState->renderHeight, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-    m_HDR.InitRenderTarget(m_pDevice, "HDR", &RDesc, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    m_HDR.CreateSRV(0, &m_HDRSRV);
-    m_HDR.CreateRTV(0, &m_HDRRTV);
+    m_TAA.OnCreateWindowSizeDependentResources(pState->renderWidth, pState->renderHeight, &m_GBuffer);
 
     // Create Texture + RTV to hold tone mapped image
     CD3DX12_RESOURCE_DESC TDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R16G16B16A16_FLOAT, pState->renderWidth, pState->renderHeight, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
@@ -171,10 +178,10 @@ void CAS_Renderer::OnCreateWindowSizeDependentResources(SwapChain *pSwapChain, S
     m_Tonemap.CreateSRV(0, &m_TonemapSRV);
     m_Tonemap.CreateRTV(0, &m_TonemapRTV);
 
-    // Update bloom, downscaling and CAS effects
-    m_downSample.OnCreateWindowSizeDependentResources(pState->renderWidth, pState->renderHeight, &m_HDR, 5); //downsample the HDR texture 5 times
-    m_bloom.OnCreateWindowSizeDependentResources(pState->renderWidth /2 , pState->renderHeight / 2, m_downSample.GetTexture(), 5, &m_HDR);
     m_CAS.OnCreateWindowSizeDependentResources(m_pDevice, pState->renderWidth, pState->renderHeight, targetWidth, targetHeight, pState->CASState, pState->usePackedMath);
+    // Update pipelines in case the format of the RTs changed (this happens when going HDR)
+    bool hdr = (pSwapChain->GetDisplayMode() != DISPLAYMODE_SDR);
+    m_ImGUI.UpdatePipeline(hdr ? m_GBuffer.m_HDR.GetFormat() : pSwapChain->GetFormat());
 }
 
 //--------------------------------------------------------------------------------------
@@ -184,20 +191,17 @@ void CAS_Renderer::OnCreateWindowSizeDependentResources(SwapChain *pSwapChain, S
 //--------------------------------------------------------------------------------------
 void CAS_Renderer::OnDestroyWindowSizeDependentResources()
 {
+    m_CAS.OnDestroyWindowSizeDependentResources();
+    m_Tonemap.OnDestroy();
+
+    m_TAA.OnDestroyWindowSizeDependentResources();
     m_bloom.OnDestroyWindowSizeDependentResources();
     m_downSample.OnDestroyWindowSizeDependentResources();
-    m_CAS.OnDestroyWindowSizeDependentResources();
 
-    m_HDR.OnDestroy();
-    m_HDRMSAA.OnDestroy();
-    m_depthBuffer.OnDestroy();
-
-    m_depthBuffer.OnDestroy();
-    m_HDRMSAA.OnDestroy();
-    m_HDR.OnDestroy();
-    m_Tonemap.OnDestroy();
+    m_renderPassJustDepthAndHdr.OnDestroyWindowSizeDependentResources();
+    m_renderPassFullGBuffer.OnDestroyWindowSizeDependentResources();
+    m_GBuffer.OnDestroyWindowSizeDependentResources();
 }
-
 
 //--------------------------------------------------------------------------------------
 //
@@ -262,14 +266,12 @@ int CAS_Renderer::LoadScene(GLTFCommon *pGLTFCommon, int stage)
             &m_UploadHeap,
             &m_resourceViewHeaps,
             &m_ConstantBufferRing,
-            &m_VidMemBufferPool,
             m_pGLTFTexturesAndBuffers,
             &m_skyDome,
-            USE_SHADOWMASK,
-            DXGI_FORMAT_R16G16B16A16_FLOAT,
-            DXGI_FORMAT_UNKNOWN,
-            DXGI_FORMAT_UNKNOWN,
-            4
+            false, // bUseSSAOMask
+            false, // bUseShadowMask
+            &m_renderPassFullGBuffer,
+            &m_asyncPool
         );
     }
     else if (stage == 9)
@@ -317,6 +319,10 @@ int CAS_Renderer::LoadScene(GLTFCommon *pGLTFCommon, int stage)
 //--------------------------------------------------------------------------------------
 void CAS_Renderer::UnloadScene()
 {
+    m_asyncPool.Flush();
+
+    m_pDevice->GPUFlush();
+
     if (m_pGltfPBR)
     {
         m_pGltfPBR->OnDestroy();
@@ -361,9 +367,13 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
 
     // Let our resource managers do some house keeping
     //
+    m_CommandListRing.OnBeginFrame();
     m_ConstantBufferRing.OnBeginFrame();
     m_GPUTimer.OnBeginFrame(gpuTicksPerSecond, &m_TimeStamps);
 
+    // Projection jitter is required for TAA.
+    uint32_t sampleIndex = 0;
+    pState->camera.SetProjectionJitter(pState->renderWidth, pState->renderHeight, sampleIndex);
     // Sets the perFrame data (Camera and lights data), override as necessary and set them as constant buffers --------------
     //
     per_frame *pPerFrame = NULL;
@@ -372,10 +382,10 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
         pPerFrame = m_pGLTFTexturesAndBuffers->m_pGLTFCommon->SetPerFrameData(pState->camera);
 
         //override gltf camera with ours
-        pPerFrame->mCameraViewProj = pState->camera.GetView() * pState->camera.GetProjection();
-        pPerFrame->cameraPos = pState->camera.GetPosition();
         pPerFrame->iblFactor = pState->iblFactor;
         pPerFrame->emmisiveFactor = pState->emmisiveFactor;
+        pPerFrame->invScreenResolution[0] = 1.0f / ((float)pState->renderWidth);
+        pPerFrame->invScreenResolution[1] = 1.0f / ((float)pState->renderHeight);
 
         //if the gltf doesn't have any lights set some spotlights
         if (pPerFrame->lightCount == 0)
@@ -383,9 +393,9 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
             pPerFrame->lightCount = pState->spotlightCount;
             for (uint32_t i = 0; i < pState->spotlightCount; i++)
             {
-                pPerFrame->lights[i].color[0] = pState->spotlight[i].color.x;
-                pPerFrame->lights[i].color[1] = pState->spotlight[i].color.y;
-                pPerFrame->lights[i].color[2] = pState->spotlight[i].color.z;
+                pPerFrame->lights[i].color[0] = pState->spotlight[i].color.getX();
+                pPerFrame->lights[i].color[1] = pState->spotlight[i].color.getY();
+                pPerFrame->lights[i].color[2] = pState->spotlight[i].color.getZ();
                 GetXYZ(pPerFrame->lights[i].position, pState->spotlight[i].light.GetPosition());
                 GetXYZ(pPerFrame->lights[i].direction, pState->spotlight[i].light.GetDirection());
 
@@ -420,24 +430,20 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
 
     m_GPUTimer.GetTimeStamp(pCmdLst1, "Begin Frame");
 
-    pCmdLst1->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(pSwapChain->GetCurrentBackBufferResource(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
-
-    // Clears -----------------------------------------------------------------------
-    //
-    pCmdLst1->ClearDepthStencilView(m_ShadowMapDSV.GetCPU(), D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-    m_GPUTimer.GetTimeStamp(pCmdLst1, "Clear Shadow Map");
-
-    float clearColor[] = { 0.0f, 0.0f, 0.0f, 0.0f };
-    pCmdLst1->ClearRenderTargetView(m_HDRRTVMSAA.GetCPU(), clearColor, 0, nullptr);
-    m_GPUTimer.GetTimeStamp(pCmdLst1, "Clear HDR");
-
-    pCmdLst1->ClearDepthStencilView(m_depthBufferDSV.GetCPU(), D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-    m_GPUTimer.GetTimeStamp(pCmdLst1, "Clear Depth");
+    bool hdr = (pSwapChain->GetDisplayMode() != DISPLAYMODE_SDR);
+    pCmdLst1->ResourceBarrier(1,
+        &CD3DX12_RESOURCE_BARRIER::Transition(
+            pSwapChain->GetCurrentBackBufferResource(),
+            D3D12_RESOURCE_STATE_PRESENT,
+            hdr ? D3D12_RESOURCE_STATE_RENDER_TARGET : D3D12_RESOURCE_STATE_COPY_DEST));
 
     // Render to shadow map atlas for spot lights ------------------------------------------
     //
     if (m_pGltfDepth && pPerFrame != NULL)
     {
+        pCmdLst1->ClearDepthStencilView(m_ShadowMapDSV.GetCPU(), D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+        m_GPUTimer.GetTimeStamp(pCmdLst1, "Clear shadow map");
+
         uint32_t shadowMapIndex = 0;
         for (uint32_t i = 0; i < pPerFrame->lightCount; i++)
         {
@@ -452,8 +458,8 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
             SetViewportAndScissor(pCmdLst1, viewportOffsetsX[i] * viewportWidth, viewportOffsetsY[i] * viewportHeight, viewportWidth, viewportHeight);
             pCmdLst1->OMSetRenderTargets(0, NULL, true, &m_ShadowMapDSV.GetCPU());
 
-            GltfDepthPass::per_frame *cbDepthPerFrame = m_pGltfDepth->SetPerFrameConstants();
-            cbDepthPerFrame->mViewProj = pPerFrame->lights[i].mLightViewProj;
+            per_frame* cbDepthPerFrame = m_pGltfDepth->SetPerFrameConstants();
+            cbDepthPerFrame->mCameraCurrViewProj = pPerFrame->lights[i].mLightViewProj;
 
             m_pGltfDepth->Draw(pCmdLst1);
 
@@ -466,104 +472,107 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
     //
     pCmdLst1->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(m_shadowMap.GetResource(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE));
 
-    pCmdLst1->RSSetViewports(1, &m_ViewPort);
-    pCmdLst1->RSSetScissorRects(1, &m_RectScissor);
-    pCmdLst1->OMSetRenderTargets(1, &m_HDRRTVMSAA.GetCPU(), true, &m_depthBufferDSV.GetCPU());
-
     if (pPerFrame != NULL)
     {
-        // Render skydome
-        //
-        if (pState->skyDomeType == 1)
-        {
-            XMMATRIX clipToView = XMMatrixInverse(NULL, pPerFrame->mCameraViewProj);
-            m_skyDome.Draw(pCmdLst1, clipToView);
-
-            m_GPUTimer.GetTimeStamp(pCmdLst1, "Skydome");
-        }
-        else if (pState->skyDomeType == 0)
-        {
-            SkyDomeProc::Constants skyDomeConstants;
-            skyDomeConstants.invViewProj = XMMatrixInverse(NULL, pPerFrame->mCameraViewProj);
-            skyDomeConstants.vSunDirection = XMVectorSet(1.0f, 0.05f, 0.0f, 0.0f);
-            skyDomeConstants.turbidity = 10.0f;
-            skyDomeConstants.rayleigh = 2.0f;
-            skyDomeConstants.mieCoefficient = 0.005f;
-            skyDomeConstants.mieDirectionalG = 0.8f;
-            skyDomeConstants.luminance = 1.0f;
-            skyDomeConstants.sun = false;
-            m_skyDomeProc.Draw(pCmdLst1, skyDomeConstants);
-
-            m_GPUTimer.GetTimeStamp(pCmdLst1, "Skydome Proc");
-        }
+        pCmdLst1->RSSetViewports(1, &m_ViewPort);
+        pCmdLst1->RSSetScissorRects(1, &m_RectScissor);
 
         // Render scene to color buffer
         //
-        if (m_pGltfPBR && pPerFrame != NULL)
+        std::vector<GltfPbrPass::BatchList> transparent;
+        if (m_pGltfPBR)
         {
-            //set per frame constant buffer values
-            m_pGltfPBR->Draw(pCmdLst1, &m_ShadowMapSRV);
+            m_renderPassFullGBuffer.BeginPass(pCmdLst1, true);
+
+            std::vector<GltfPbrPass::BatchList> opaque;
+            m_pGltfPBR->BuildBatchLists(&opaque, &transparent);
+
+            // Render opaque geometry
+            //
+            m_pGltfPBR->DrawBatchList(pCmdLst1, &m_ShadowMapSRV, &opaque);
+            m_GPUTimer.GetTimeStamp(pCmdLst1, "PBR Opaque");
+
+            m_renderPassFullGBuffer.EndPass();
+        }
+        // Render skydome
+        //
+        {
+            m_renderPassJustDepthAndHdr.BeginPass(pCmdLst1, false);
+
+            if (pState->skyDomeType == 1)
+            {
+                math::Matrix4 clipToView = math::inverse(pPerFrame->mCameraCurrViewProj);
+                m_skyDome.Draw(pCmdLst1, clipToView);
+                m_GPUTimer.GetTimeStamp(pCmdLst1, "Skydome cube");
+            }
+            else if (pState->skyDomeType == 0)
+            {
+                SkyDomeProc::Constants skyDomeConstants;
+                skyDomeConstants.invViewProj = math::inverse(pPerFrame->mCameraCurrViewProj);
+                skyDomeConstants.vSunDirection = math::Vector4(1.0f, 0.05f, 0.0f, 0.0f);
+                skyDomeConstants.turbidity = 10.0f;
+                skyDomeConstants.rayleigh = 2.0f;
+                skyDomeConstants.mieCoefficient = 0.005f;
+                skyDomeConstants.mieDirectionalG = 0.8f;
+                skyDomeConstants.luminance = 1.0f;
+                m_skyDomeProc.Draw(pCmdLst1, skyDomeConstants);
+
+                m_GPUTimer.GetTimeStamp(pCmdLst1, "Skydome proc");
+            }
+
+            m_renderPassJustDepthAndHdr.EndPass();
         }
 
+        // draw transparent geometry
+        //
+        if (m_pGltfPBR)
+        {
+            m_renderPassFullGBuffer.BeginPass(pCmdLst1, false);
+
+            std::sort(transparent.begin(), transparent.end());
+            m_pGltfPBR->DrawBatchList(pCmdLst1, &m_ShadowMapSRV, &transparent);
+            m_GPUTimer.GetTimeStamp(pCmdLst1, "PBR Transparent");
+
+            m_renderPassFullGBuffer.EndPass();
+        }
         // draw object's bounding boxes
         //
-        if (m_pGltfBBox && pPerFrame != NULL)
+        if (m_pGltfBBox)
         {
             if (pState->bDrawBoundingBoxes)
             {
-                m_pGltfBBox->Draw(pCmdLst1, pPerFrame->mCameraViewProj);
+                m_pGltfBBox->Draw(pCmdLst1, pPerFrame->mCameraCurrViewProj);
                 m_GPUTimer.GetTimeStamp(pCmdLst1, "Bounding Box");
             }
         }
 
         // draw light's frustums
         //
-        if (pState->bDrawLightFrustum && pPerFrame != NULL)
+        if (pState->bDrawLightFrustum)
         {
-            //SetPerfMarkerBegin(cmd_buf, "light frustrum");
+            UserMarker marker(pCmdLst1, "light frustrums");
 
-            XMVECTOR vCenter = XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f);
-            XMVECTOR vRadius = XMVectorSet(1.0f, 1.0f, 1.0f, 0.0f);
-            XMVECTOR vColor  = XMVectorSet(1.0f, 1.0f, 1.0f, 1.0f);
+            math::Vector4 vCenter = math::Vector4(0.0f, 0.0f, 0.5f, 0.0f);
+            math::Vector4 vRadius = math::Vector4(1.0f, 1.0f, 0.5f, 0.0f);
+            math::Vector4 vColor = math::Vector4(1.0f, 1.0f, 1.0f, 1.0f);
             for (uint32_t i = 0; i < pPerFrame->lightCount; i++)
             {
-                XMMATRIX spotlightMatrix = XMMatrixInverse(NULL, pPerFrame->lights[i].mLightViewProj);
-                XMMATRIX worldMatrix = spotlightMatrix * pPerFrame->mCameraViewProj;
+                math::Matrix4 spotlightMatrix = math::inverse(pPerFrame->lights[i].mLightViewProj); // XMMatrixInverse(NULL, pPerFrame->lights[i].mLightViewProj);
+                math::Matrix4 worldMatrix = pPerFrame->mCameraCurrViewProj * spotlightMatrix; //spotlightMatrix * pPerFrame->mCameraCurrViewProj;
                 m_wireframeBox.Draw(pCmdLst1, &m_wireframe, worldMatrix, vCenter, vRadius, vColor);
             }
 
             m_GPUTimer.GetTimeStamp(pCmdLst1, "Light's frustum");
-
-            //SetPerfMarkerEnd(cmd_buf);
         }
-    }
-    pCmdLst1->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(m_shadowMap.GetResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE));
+    } // end if (pPerFrame != NULL)
+
+    D3D12_RESOURCE_BARRIER postRenderScene[] = {
+        CD3DX12_RESOURCE_BARRIER::Transition(m_shadowMap.GetResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE),
+        CD3DX12_RESOURCE_BARRIER::Transition(m_GBuffer.m_HDR.GetResource(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+    };
+    pCmdLst1->ResourceBarrier(ARRAYSIZE(postRenderScene), postRenderScene);
 
     m_GPUTimer.GetTimeStamp(pCmdLst1, "Rendering Scene");
-
-    // Resolve MSAA ------------------------------------------------------------------------
-    //
-    {
-        D3D12_RESOURCE_BARRIER Barriers[] =
-        {
-            CD3DX12_RESOURCE_BARRIER::Transition(m_HDR.GetResource(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_RESOLVE_DEST),
-            CD3DX12_RESOURCE_BARRIER::Transition(m_HDRMSAA.GetResource(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_RESOLVE_SOURCE),
-        };
-        pCmdLst1->ResourceBarrier(_countof(Barriers), Barriers);
-    }
-
-    pCmdLst1->ResolveSubresource(m_HDR.GetResource(), 0, m_HDRMSAA.GetResource(), 0, DXGI_FORMAT_R16G16B16A16_FLOAT);
-
-    {
-        D3D12_RESOURCE_BARRIER Barriers[] =
-        {
-            CD3DX12_RESOURCE_BARRIER::Transition(m_HDR.GetResource(), D3D12_RESOURCE_STATE_RESOLVE_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
-            CD3DX12_RESOURCE_BARRIER::Transition(m_HDRMSAA.GetResource(), D3D12_RESOURCE_STATE_RESOLVE_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
-        };
-        pCmdLst1->ResourceBarrier(_countof(Barriers), Barriers); // the bloom needs to read from this
-    }
-
-    m_GPUTimer.GetTimeStamp(pCmdLst1, "Resolve");
 
     // Post proc---------------------------------------------------------------------------
     //
@@ -572,19 +581,24 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
         //m_downSample.Gui();
         m_GPUTimer.GetTimeStamp(pCmdLst1, "Downsample");
 
-        m_bloom.Draw(pCmdLst1, &m_HDR);
+        // Bloom renders to GBuffer HDR render target
+        m_bloom.Draw(pCmdLst1,
+            // Cauldron 1.4.1 doesn't actually use this parameter because the input texture
+            // is passed and stored in OnCreateWindowSizeDependentResources.
+            // TODO validate that Cauldron 2 fixes this.
+            m_downSample.GetTexture());
         //m_bloom.Gui();
         m_GPUTimer.GetTimeStamp(pCmdLst1, "Bloom");
+
+        // TAA input is GBuffer HDR render target after output from Bloom. TAA runs two compute shaders.
+        // The first writes to a intermediate UAV, the second writes back tothe BGuffer HDR texture.
+        m_TAA.Draw(pCmdLst1, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        m_GPUTimer.GetTimeStamp(pCmdLst1, "TAA");
     }
 
     ThrowIfFailed(pCmdLst1->Close());
     ID3D12CommandList* CmdListList1[] = { pCmdLst1 };
     m_pDevice->GetGraphicsQueue()->ExecuteCommandLists(1, CmdListList1);
-
-    // Wait for swapchain (we are going to render to it) -----------------------------------
-    //
-    pSwapChain->WaitForSwapChain();
-    m_CommandListRing.OnBeginFrame();
 
     ID3D12GraphicsCommandList* pCmdLst2 = m_CommandListRing.GetNewCommandList();
 
@@ -595,11 +609,15 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
         pCmdLst2->RSSetScissorRects(1, &m_RectScissor);
         pCmdLst2->OMSetRenderTargets(1, &m_TonemapRTV.GetCPU(), true, NULL);
 
-        m_toneMapping.Draw(pCmdLst2, &m_HDRSRV, pState->exposure, pState->toneMapper);
+        m_toneMapping.Draw(pCmdLst2, &m_GBuffer.m_HDRSRV, pState->exposure, pState->toneMapper);
         m_GPUTimer.GetTimeStamp(pCmdLst2, "Tone mapping");
 
-        pCmdLst2->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(m_HDR.GetResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET));
+        pCmdLst2->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(m_GBuffer.m_HDR.GetResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET));
     }
+
+    // Wait for swapchain (we are going to render to it) -----------------------------------
+    //
+    pSwapChain->WaitForSwapChain();
 
     // Cas ------------------------------------------------------------------------
     //
@@ -640,8 +658,8 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
     ThrowIfFailed(pCmdLst2->Close());
 
     ID3D12CommandList* CmdListList2[] = { pCmdLst2 };
-    m_pDevice->GetGraphicsQueue()->ExecuteCommandLists(1, CmdListList2);
-    m_pDevice->GPUFlush();
+    m_pDevice->GetGraphicsQueue()->ExecuteCommandLists(ARRAYSIZE(CmdListList2), CmdListList2);
+    // Why? m_pDevice->GPUFlush();
 }
 
 void CAS_Renderer::UpdateCASSharpness(float NewSharpenVal, CAS_State CasState)
