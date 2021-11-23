@@ -179,9 +179,6 @@ void CAS_Renderer::OnCreateWindowSizeDependentResources(SwapChain *pSwapChain, S
     m_Tonemap.CreateRTV(0, &m_TonemapRTV);
 
     m_CAS.OnCreateWindowSizeDependentResources(m_pDevice, pState->renderWidth, pState->renderHeight, targetWidth, targetHeight, pState->CASState, pState->usePackedMath);
-    // Update pipelines in case the format of the RTs changed (this happens when going HDR)
-    bool hdr = (pSwapChain->GetDisplayMode() != DISPLAYMODE_SDR);
-    m_ImGUI.UpdatePipeline(hdr ? m_GBuffer.m_HDR.GetFormat() : pSwapChain->GetFormat());
 }
 
 //--------------------------------------------------------------------------------------
@@ -430,13 +427,12 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
 
     m_GPUTimer.GetTimeStamp(pCmdLst1, "Begin Frame");
 
-    bool hdr = (pSwapChain->GetDisplayMode() != DISPLAYMODE_SDR);
+    // TODO support HDR mode?
     pCmdLst1->ResourceBarrier(1,
         &CD3DX12_RESOURCE_BARRIER::Transition(
             pSwapChain->GetCurrentBackBufferResource(),
             D3D12_RESOURCE_STATE_PRESENT,
             D3D12_RESOURCE_STATE_RENDER_TARGET));
-            //hdr ? D3D12_RESOURCE_STATE_RENDER_TARGET : D3D12_RESOURCE_STATE_COPY_DEST));
 
     // Render to shadow map atlas for spot lights ------------------------------------------
     //
@@ -469,8 +465,6 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
         }
     }
 
-    // Render Scene to the MSAA HDR RT ------------------------------------------------
-    //
     pCmdLst1->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(m_shadowMap.GetResource(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE));
 
     if (pPerFrame != NULL)
