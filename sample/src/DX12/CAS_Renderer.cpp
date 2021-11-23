@@ -77,9 +77,9 @@ void CAS_Renderer::OnCreate(Device* pDevice, SwapChain *pSwapChain)
     m_shadowMap.CreateDSV(0, &m_ShadowMapDSV);
     m_shadowMap.CreateSRV(0, &m_ShadowMapSRV);
 
-    m_skyDome.OnCreate(pDevice, &m_UploadHeap, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, "..\\media\\envmaps\\papermill\\diffuse.dds", "..\\media\\envmaps\\papermill\\specular.dds", DXGI_FORMAT_R16G16B16A16_FLOAT, 4);
-    m_skyDomeProc.OnCreate(pDevice, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, DXGI_FORMAT_R16G16B16A16_FLOAT, 4);
-    m_wireframe.OnCreate(pDevice, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, DXGI_FORMAT_R16G16B16A16_FLOAT, 4);
+    m_skyDome.OnCreate(pDevice, &m_UploadHeap, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, "..\\media\\envmaps\\papermill\\diffuse.dds", "..\\media\\envmaps\\papermill\\specular.dds", DXGI_FORMAT_R16G16B16A16_FLOAT, 1);
+    m_skyDomeProc.OnCreate(pDevice, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, DXGI_FORMAT_R16G16B16A16_FLOAT, 1);
+    m_wireframe.OnCreate(pDevice, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, DXGI_FORMAT_R16G16B16A16_FLOAT, 1);
     m_wireframeBox.OnCreate(pDevice, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool);
     m_downSample.OnCreate(pDevice, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, DXGI_FORMAT_R16G16B16A16_FLOAT);
     m_bloom.OnCreate(pDevice, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, DXGI_FORMAT_R16G16B16A16_FLOAT);
@@ -435,7 +435,8 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
         &CD3DX12_RESOURCE_BARRIER::Transition(
             pSwapChain->GetCurrentBackBufferResource(),
             D3D12_RESOURCE_STATE_PRESENT,
-            hdr ? D3D12_RESOURCE_STATE_RENDER_TARGET : D3D12_RESOURCE_STATE_COPY_DEST));
+            D3D12_RESOURCE_STATE_RENDER_TARGET));
+            //hdr ? D3D12_RESOURCE_STATE_RENDER_TARGET : D3D12_RESOURCE_STATE_COPY_DEST));
 
     // Render to shadow map atlas for spot lights ------------------------------------------
     //
@@ -659,7 +660,10 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
 
     ID3D12CommandList* CmdListList2[] = { pCmdLst2 };
     m_pDevice->GetGraphicsQueue()->ExecuteCommandLists(ARRAYSIZE(CmdListList2), CmdListList2);
-    // Why? m_pDevice->GPUFlush();
+    // TODO: It shouldn't be necessary to call GPUFlush, but currently if it is not done then
+    // m_CommandListRing.OnBeginFrame() will cause crash due to invalidation of command list
+    // when GPU is still using it.
+    m_pDevice->GPUFlush();
 }
 
 void CAS_Renderer::UpdateCASSharpness(float NewSharpenVal, CAS_State CasState)

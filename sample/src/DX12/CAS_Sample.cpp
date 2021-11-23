@@ -167,10 +167,14 @@ void CAS_Sample::OnResize(bool resizeRender)
             std::vector<ResolutionInfo> supportedResolutions = {};
             CAS_Filter::GetSupportedResolutions(m_Width, m_Height, supportedResolutions);
 
-            // TODO what is the intention of this code? The display modes are related to SDR vs HDR
-            // but this code appears to have more to do with scaling than HDR vs SDR mode.
-            m_state.renderWidth = supportedResolutions[m_currentDisplayModeNamesIndex].Width;
-            m_state.renderHeight = supportedResolutions[m_currentDisplayModeNamesIndex].Height;
+            if (supportedResolutions.size() > 0)
+            {
+                if (m_curResolutionIndex >= supportedResolutions.size())
+                    m_curResolutionIndex = 0u;
+
+                m_state.renderWidth = supportedResolutions[m_curResolutionIndex].Width;
+                m_state.renderHeight = supportedResolutions[m_curResolutionIndex].Height;
+            }
         }
 
         if (m_pNode != nullptr)
@@ -310,8 +314,8 @@ void CAS_Sample::OnRender()
             return true;
         };
 
-        m_previousDisplayModeNamesIndex = m_currentDisplayModeNamesIndex;
-        ImGui::Combo("Render Dim", reinterpret_cast<int*>(&m_currentDisplayModeNamesIndex), itemsGetter, reinterpret_cast<void*>(&supportedResolutions.front()), static_cast<int>(supportedResolutions.size()));
+        m_prevResolutionIndex = m_curResolutionIndex;
+        ImGui::Combo("Render Dim", reinterpret_cast<int*>(&m_curResolutionIndex), itemsGetter, reinterpret_cast<void*>(&supportedResolutions.front()), static_cast<int>(supportedResolutions.size()));
 
         if (m_device.IsFp16Supported())
         {
@@ -342,10 +346,10 @@ void CAS_Sample::OnRender()
             m_state.CASState = CAS_State_SharpenOnly;
         }
 
-        if (m_previousDisplayModeNamesIndex != m_currentDisplayModeNamesIndex || oldCasState != m_state.CASState)
+        if (m_prevResolutionIndex != m_curResolutionIndex || oldCasState != m_state.CASState)
         {
-            m_state.renderWidth = supportedResolutions[m_currentDisplayModeNamesIndex].Width;
-            m_state.renderHeight = supportedResolutions[m_currentDisplayModeNamesIndex].Height;
+            m_state.renderWidth = supportedResolutions[m_curResolutionIndex].Width;
+            m_state.renderHeight = supportedResolutions[m_curResolutionIndex].Height;
 
             m_device.GPUFlush();
             m_pNode->OnDestroyWindowSizeDependentResources();
@@ -371,25 +375,38 @@ void CAS_Sample::OnRender()
             std::vector<TimeStamp> timeStamps = m_pNode->GetTimingValues();
             if (timeStamps.size() > 0)
             {
-                for (uint32_t i = 1; i < timeStamps.size(); i++)
+                for (uint32_t i = 1; i < timeStamps.size() - 1; i++)
                 {
-                    float DeltaTime = ((float)(timeStamps[i].m_microseconds - timeStamps[i - 1].m_microseconds));
+                    float DeltaTime = timeStamps[i].m_microseconds;
+                    ImGui::Text("%-17s: %7.1f us", timeStamps[i].m_label.c_str(), DeltaTime);
                     if (strcmp("CAS", timeStamps[i].m_label.c_str()) == 0)
                     {
                         CASTime = DeltaTime;
                     }
-                    ImGui::Text("%-17s: %7.1f us", timeStamps[i].m_label.c_str(), DeltaTime);
                 }
 
                 //scrolling data and average computing
-                static float values[128];
-                values[127] = (float)(timeStamps.back().m_microseconds - timeStamps.front().m_microseconds);
-                float average = values[0];
-                for (uint32_t i = 0; i < 128 - 1; i++) { values[i] = values[i + 1]; average += values[i]; }
-                average /= 128;
+                static float values[128] = { 0.0f };
+                float minTotal = FLT_MAX;
+                float maxTotal = -1.0f;
+                // Copy previous total times one element to the left.
+                for (uint32_t i = 0; i < 128 - 1; i++)
+                {
+                    values[i] = values[i + 1];
+                    if (values[i] < minTotal)
+                        minTotal = values[i];
+                    if (values[i] > maxTotal)
+                        maxTotal = values[i];
+                }
+                // Store current total time at end.
+                values[127] = timeStamps.back().m_microseconds;
 
-                ImGui::Text("%-17s: %7.1f us", "TotalGPUTime", average);
-                ImGui::PlotLines("", values, 128, 0, "", 0.0f, 30000.0f, ImVec2(0, 80));
+                // round down to nearest 1000.0f
+                float rangeStart = static_cast<uint32_t>(minTotal / 1000.0f) * 1000.0f;
+                // round maxTotal up to nearest 10,000.0f
+                float rangeStop = (static_cast<uint32_t>(maxTotal / 10000.0f) * 10000.0f) + 10000.0f;
+
+                ImGui::PlotLines("", values, 128, 0, "", rangeStart, rangeStop, ImVec2(0, 80));
             }
         }
 
@@ -409,7 +426,7 @@ void CAS_Sample::OnRender()
             }
         }
 
-        bool isHit = ImGui::Button("Start Timing", { 150, 30 });
+        bool isHit = ImGui::Button("Update Avg", { 150, 30 });
         if (isHit)
         {
             m_state.profiling = true;

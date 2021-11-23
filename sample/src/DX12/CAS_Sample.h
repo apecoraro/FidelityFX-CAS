@@ -54,6 +54,9 @@ private:
     CAS_Renderer         *m_pNode;
     CAS_Renderer::State   m_state;
 
+    uint32_t              m_curResolutionIndex = 0u;
+    uint32_t              m_prevResolutionIndex = m_curResolutionIndex;
+
     float                 m_distance;
     float                 m_roll;
     float                 m_pitch;
@@ -64,6 +67,6 @@ private:
     
     // Profiling info for CAS
     int                   m_CASTimingsCurrId;
-    float                 m_CASTimings[300];
+    float                 m_CASTimings[120];
     float                 m_CASAvgTiming;
 };
