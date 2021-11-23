@@ -369,8 +369,8 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
     m_GPUTimer.OnBeginFrame(gpuTicksPerSecond, &m_TimeStamps);
 
     // Projection jitter is required for TAA.
-    uint32_t sampleIndex = 0;
-    pState->camera.SetProjectionJitter(pState->renderWidth, pState->renderHeight, sampleIndex);
+    uint32_t seed = 0;
+    pState->camera.SetProjectionJitter(pState->renderWidth, pState->renderHeight, seed);
     // Sets the perFrame data (Camera and lights data), override as necessary and set them as constant buffers --------------
     //
     per_frame *pPerFrame = NULL;

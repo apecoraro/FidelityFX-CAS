@@ -43,6 +43,7 @@
 using namespace DirectX;
 
 // TODO: reference additional headers your program requires here
+// TODO: change path separator to '/'
 #include "Base\Imgui.h"
 #include "Base\ImguiHelper.h"
 #include "Base\Fence.h"

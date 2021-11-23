@@ -109,9 +109,6 @@ private:
     GltfPbrPass                    *m_pGltfPBR;
     GltfDepthPass                  *m_pGltfDepth;
     GltfBBoxPass                   *m_pGltfBBox;
-    Texture                         m_MotionVectorsDepthMap;
-    DSV                             m_MotionVectorsDepthMapDSV;
-    CBV_SRV_UAV                     m_MotionVectorsDepthMapSRV;
 
     // effects
     Bloom                           m_bloom;

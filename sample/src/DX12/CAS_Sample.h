@@ -49,24 +49,24 @@ public:
     void OnUpdateDisplay() override {};
 
 private:
-    GLTFCommon           *m_pGltfLoader;
+    GLTFCommon           *m_pGltfLoader = nullptr;
 
-    CAS_Renderer         *m_pNode;
+    CAS_Renderer         *m_pNode = nullptr;
     CAS_Renderer::State   m_state;
 
     uint32_t              m_curResolutionIndex = 0u;
     uint32_t              m_prevResolutionIndex = m_curResolutionIndex;
 
-    float                 m_distance;
-    float                 m_roll;
-    float                 m_pitch;
+    float                 m_distance = 0.0f;
+    float                 m_roll = 0.0f;
+    float                 m_pitch = 0.0f;
 
-    float                 m_time;             // WallClock in seconds.
+    float                 m_time = 0.0f;             // WallClock in seconds.
 
-    bool                  m_bPlay;
+    bool                  m_bPlay = true;
     
     // Profiling info for CAS
-    int                   m_CASTimingsCurrId;
-    float                 m_CASTimings[120];
-    float                 m_CASAvgTiming;
+    int                   m_CASTimingsCurrId = -1;
+    float                 m_CASTimings[120] = { 0.0f };
+    float                 m_CASAvgTiming = 0.0f;
 };

@@ -29,7 +29,6 @@ const bool VALIDATION_ENABLED = false;
 
 CAS_Sample::CAS_Sample(LPCSTR name) : FrameworkWindows(name)
 {
-    m_lastFrameTime = MillisecondsNow();
     m_time = 0;
     m_bPlay = true;
 
