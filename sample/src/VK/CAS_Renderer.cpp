@@ -52,6 +52,26 @@ void CAS_Renderer::OnCreate(Device *pDevice, SwapChain *pSwapChain)
     // for 4K textures we'll need 100Megs
     m_UploadHeap.OnCreate(pDevice, 100 * 1024 * 1024);    // initialize an upload heap (uses suballocation for faster results)
 
+    // Create GBuffer and render passes
+    //
+    {
+        m_GBuffer.OnCreate(
+            pDevice,
+            &m_resourceViewHeaps,
+            {
+                { GBUFFER_DEPTH, VK_FORMAT_D32_SFLOAT},
+                { GBUFFER_FORWARD, VK_FORMAT_R16G16B16A16_SFLOAT},
+                { GBUFFER_MOTION_VECTORS, VK_FORMAT_R16G16_SFLOAT},
+            },
+            1
+        );
+
+        GBufferFlags fullGBuffer = GBUFFER_DEPTH | GBUFFER_FORWARD | GBUFFER_MOTION_VECTORS;
+        bool bClear = true;
+        m_renderPassFullGBuffer.OnCreate(&m_GBuffer, fullGBuffer, !bClear, "m_renderPassFullGBuffer");
+        m_renderPassJustDepthAndHdr.OnCreate(&m_GBuffer, GBUFFER_DEPTH | GBUFFER_FORWARD, !bClear, "m_renderPassJustDepthAndHdr");
+    }
+
     // Create a Shadowmap atlas to hold 4 cascades/spotlights
     m_shadowMap.InitDepthStencil(m_pDevice, 2*1024, 2 * 1024, VK_FORMAT_D32_SFLOAT, VK_SAMPLE_COUNT_1_BIT, "ShadowMap");
     m_shadowMap.CreateSRV(&m_shadowMapSRV);
@@ -60,37 +80,11 @@ void CAS_Renderer::OnCreate(Device *pDevice, SwapChain *pSwapChain)
     // Create render pass shadow
     //
     {
-        /* Need attachments for render target and depth buffer */
-        VkAttachmentDescription attachments[1];
-        AttachClearBeforeUse(m_shadowMap.GetFormat(), VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, attachments + 0);
-        VkAttachmentReference depth_reference = { 0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+        VkAttachmentDescription depthAttachments;
+        AttachClearBeforeUse(m_shadowMap.GetFormat(), VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &depthAttachments);
+        m_render_pass_shadow = CreateRenderPassOptimal(m_pDevice->GetDevice(), 0, NULL, &depthAttachments);
 
-        VkSubpassDescription subpass = {};
-        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        subpass.flags = 0;
-        subpass.inputAttachmentCount = 0;
-        subpass.pInputAttachments = NULL;
-        subpass.colorAttachmentCount = 0;
-        subpass.pColorAttachments = NULL;
-        subpass.pResolveAttachments = NULL;
-        subpass.pDepthStencilAttachment = &depth_reference;
-        subpass.preserveAttachmentCount = 0;
-        subpass.pPreserveAttachments = NULL;
-
-        VkRenderPassCreateInfo rp_info = {};
-        rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-        rp_info.pNext = NULL;
-        rp_info.attachmentCount = 1;
-        rp_info.pAttachments = attachments;
-        rp_info.subpassCount = 1;
-        rp_info.pSubpasses = &subpass;
-        rp_info.dependencyCount = 0;
-        rp_info.pDependencies = NULL;
-
-        VkResult res = vkCreateRenderPass(m_pDevice->GetDevice(), &rp_info, NULL, &m_render_pass_shadow);
-        assert(res == VK_SUCCESS);
-
-        // Create frame buffer
+        // Create frame buffer, its size is now window dependant so we can do this here.
         //
         VkImageView attachmentViews[1] = { m_shadowMapDSV };
         VkFramebufferCreateInfo fb_info = {};
@@ -102,18 +96,16 @@ void CAS_Renderer::OnCreate(Device *pDevice, SwapChain *pSwapChain)
         fb_info.width = m_shadowMap.GetWidth();
         fb_info.height = m_shadowMap.GetHeight();
         fb_info.layers = 1;
-        res = vkCreateFramebuffer(m_pDevice->GetDevice(), &fb_info, NULL, &m_shadowMapBuffers);
+        VkResult res = vkCreateFramebuffer(m_pDevice->GetDevice(), &fb_info, NULL, &m_shadowMapBuffers);
         assert(res == VK_SUCCESS);
     }
 
-    // Create HDR MSAA render pass color with clear
-    //
-    {
-        VkAttachmentDescription colorAttachment, depthAttachment;
-        AttachClearBeforeUse(VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_4_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, &colorAttachment);
-        AttachClearBeforeUse(VK_FORMAT_D32_SFLOAT, VK_SAMPLE_COUNT_4_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, &depthAttachment);
-        m_render_pass_HDR_MSAA = CreateRenderPassOptimal(m_pDevice->GetDevice(), 1, &colorAttachment, &depthAttachment);
-    }
+    m_skyDome.OnCreate(pDevice, m_renderPassJustDepthAndHdr.GetRenderPass(), &m_UploadHeap, VK_FORMAT_R16G16B16A16_SFLOAT, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, "..\\media\\envmaps\\papermill\\diffuse.dds", "..\\media\\envmaps\\papermill\\specular.dds", VK_SAMPLE_COUNT_4_BIT);
+    m_skyDomeProc.OnCreate(pDevice, m_renderPassJustDepthAndHdr.GetRenderPass(), &m_UploadHeap, VK_FORMAT_R16G16B16A16_SFLOAT, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, VK_SAMPLE_COUNT_1_BIT);
+    m_wireframe.OnCreate(pDevice, m_renderPassJustDepthAndHdr.GetRenderPass(), &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, VK_SAMPLE_COUNT_1_BIT);
+    m_wireframeBox.OnCreate(pDevice, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool);
+    m_downSample.OnCreate(pDevice, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, VK_FORMAT_R16G16B16A16_SFLOAT);
+    m_bloom.OnCreate(pDevice, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, VK_FORMAT_R16G16B16A16_SFLOAT);
 
     // Create tone map render pass
     {
@@ -158,6 +150,15 @@ void CAS_Renderer::OnCreate(Device *pDevice, SwapChain *pSwapChain)
         assert(res == VK_SUCCESS);
     }
 
+    // Create tonemapping pass
+    m_toneMapping.OnCreate(m_pDevice, m_render_pass_tonemap, &m_resourceViewHeaps, &m_SysMemBufferPool, &m_ConstantBufferRing);
+
+    // Create cas pass
+    m_CAS.OnCreate(m_pDevice, m_render_pass_swap_chain, pSwapChain->GetFormat(), &m_resourceViewHeaps, &m_SysMemBufferPool, &m_ConstantBufferRing);
+
+    // Initialize UI rendering resources
+    m_ImGUI.OnCreate(m_pDevice, m_render_pass_swap_chain, &m_UploadHeap, &m_ConstantBufferRing);
+
     // Create swapchain render pass
     {
         // color RT
@@ -191,22 +192,6 @@ void CAS_Renderer::OnCreate(Device *pDevice, SwapChain *pSwapChain)
         assert(res == VK_SUCCESS);
     }
 
-    m_skyDome.OnCreate(pDevice, m_render_pass_HDR_MSAA, &m_UploadHeap, VK_FORMAT_R16G16B16A16_SFLOAT, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, "..\\media\\envmaps\\papermill\\diffuse.dds", "..\\media\\envmaps\\papermill\\specular.dds", VK_SAMPLE_COUNT_4_BIT);
-    m_skyDomeProc.OnCreate(pDevice, m_render_pass_HDR_MSAA, &m_UploadHeap, VK_FORMAT_R16G16B16A16_SFLOAT, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, VK_SAMPLE_COUNT_4_BIT);
-    m_wireframe.OnCreate(pDevice, m_render_pass_HDR_MSAA, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, VK_SAMPLE_COUNT_4_BIT);
-    m_wireframeBox.OnCreate(pDevice, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool);
-    m_downSample.OnCreate(pDevice, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, VK_FORMAT_R16G16B16A16_SFLOAT);
-    m_bloom.OnCreate(pDevice, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, VK_FORMAT_R16G16B16A16_SFLOAT);
-
-    // Create tonemapping pass
-    m_toneMapping.OnCreate(m_pDevice, m_render_pass_tonemap, &m_resourceViewHeaps, &m_SysMemBufferPool, &m_ConstantBufferRing);
-
-    // Create cas pass
-    m_CAS.OnCreate(m_pDevice, m_render_pass_swap_chain, pSwapChain->GetFormat(), &m_resourceViewHeaps, &m_SysMemBufferPool, &m_ConstantBufferRing);
-
-    // Initialize UI rendering resources
-    m_ImGUI.OnCreate(m_pDevice, m_render_pass_swap_chain, &m_UploadHeap, &m_ConstantBufferRing);
-
     // Make sure upload heap has finished uploading before continuing
 #if (USE_VID_MEM==true)
     m_VidMemBufferPool.UploadData(m_UploadHeap.GetCommandList());
@@ -221,6 +206,8 @@ void CAS_Renderer::OnCreate(Device *pDevice, SwapChain *pSwapChain)
 //--------------------------------------------------------------------------------------
 void CAS_Renderer::OnDestroy()
 {
+    m_asyncPool.Flush();
+
     m_toneMapping.OnDestroy();
     m_ImGUI.OnDestroy();
     m_bloom.OnDestroy();
@@ -232,11 +219,14 @@ void CAS_Renderer::OnDestroy()
     m_shadowMap.OnDestroy();
     m_CAS.OnDestroy();
 
+    m_renderPassJustDepthAndHdr.OnDestroy();
+    m_renderPassFullGBuffer.OnDestroy();
+    m_GBuffer.OnDestroy();
+
     vkDestroyImageView(m_pDevice->GetDevice(), m_shadowMapDSV, nullptr);
     vkDestroyImageView(m_pDevice->GetDevice(), m_shadowMapSRV, nullptr);
 
     vkDestroyRenderPass(m_pDevice->GetDevice(), m_render_pass_shadow, nullptr);
-    vkDestroyRenderPass(m_pDevice->GetDevice(), m_render_pass_HDR_MSAA, nullptr);
     vkDestroyRenderPass(m_pDevice->GetDevice(), m_render_pass_tonemap, nullptr);
     vkDestroyRenderPass(m_pDevice->GetDevice(), m_render_pass_swap_chain, nullptr);
 
@@ -300,51 +290,22 @@ void CAS_Renderer::OnCreateWindowSizeDependentResources(SwapChain *pSwapChain, S
     m_finalScissor.offset.x = 0;
     m_finalScissor.offset.y = 0;
 
-    // Create depth buffer
+    // Create frame buffers for the GBuffer render passes
     //
-    {
-        m_depthBuffer.InitDepthStencil(m_pDevice, pState->renderWidth, pState->renderHeight, VK_FORMAT_D32_SFLOAT, VK_SAMPLE_COUNT_4_BIT, "DepthBuffer");
-        m_depthBuffer.CreateDSV(&m_depthBufferView);
-    }
+    m_renderPassJustDepthAndHdr.OnCreateWindowSizeDependentResources(pState->renderWidth, pState->renderHeight);
+    m_renderPassFullGBuffer.OnCreateWindowSizeDependentResources(pState->renderWidth, pState->renderHeight);
 
-    // Create Texture + RTV with x4 MSAA
+    // Update PostProcessing passes
     //
-    {
-        m_HDRMSAA.InitRenderTarget(m_pDevice, pState->renderWidth, pState->renderHeight, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_4_BIT, static_cast<VkImageUsageFlags>(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT), false, "HDRMSAA");
-        m_HDRMSAA.CreateRTV(&m_HDRMSAASRV);
-    }
-
-    // Create Texture + RTV, to hold the resolved scene
-    //
-    {
-        m_HDR.InitRenderTarget(m_pDevice, pState->renderWidth, pState->renderHeight, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, static_cast<VkImageUsageFlags>(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT), false, "HDR");
-        m_HDR.CreateSRV(&m_HDRSRV);
-    }
-
+    m_downSample.OnCreateWindowSizeDependentResources(pState->renderWidth, pState->renderHeight, &m_GBuffer.m_HDR, 5); //downsample the HDR texture 5 times
+    m_bloom.OnCreateWindowSizeDependentResources(pState->renderWidth / 2, pState->renderHeight / 2, m_downSample.GetTexture(), 1, &m_GBuffer.m_HDR);
+    m_TAA.OnCreateWindowSizeDependentResources(pState->renderWidth, pState->renderHeight, &m_GBuffer);
+    
     // Create Texture + RTV, to hold the tonemapped scene
     //
     {
         m_tonemapTexture.InitRenderTarget(m_pDevice, pState->renderWidth, pState->renderHeight, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, static_cast<VkImageUsageFlags>(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT), false, "Tonemap");
         m_tonemapTexture.CreateSRV(&m_tonemapSRV);
-    }
-
-    // Create framebuffer for the MSAA RT
-    //
-    {
-        VkImageView attachments[2] = { m_HDRMSAASRV, m_depthBufferView };
-
-        VkFramebufferCreateInfo fb_info = {};
-        fb_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        fb_info.pNext = NULL;
-        fb_info.renderPass = m_render_pass_HDR_MSAA;
-        fb_info.attachmentCount = 2;
-        fb_info.pAttachments = attachments;
-        fb_info.width = pState->renderWidth;
-        fb_info.height = pState->renderHeight;
-        fb_info.layers = 1;
-
-        VkResult res = vkCreateFramebuffer(m_pDevice->GetDevice(), &fb_info, NULL, &m_frameBuffer_HDR_MSAA);
-        assert(res == VK_SUCCESS);
     }
 
     // Create framebuffer for the tonemapped scene
@@ -366,11 +327,8 @@ void CAS_Renderer::OnCreateWindowSizeDependentResources(SwapChain *pSwapChain, S
         assert(res == VK_SUCCESS);
     }
 
-    // Update bloom, downscaling, tonemapping and CAS
-    //
-    m_downSample.OnCreateWindowSizeDependentResources(pState->renderWidth, pState->renderHeight, &m_HDR, 5); //downsample the HDR texture 5 times
-    m_bloom.OnCreateWindowSizeDependentResources(pState->renderWidth / 2, pState->renderHeight / 2, m_downSample.GetTexture(), 5, &m_HDR);
     m_toneMapping.UpdatePipelines(m_render_pass_tonemap);
+
     m_CAS.OnCreateWindowSizeDependentResources(pState->renderWidth, pState->renderHeight, targetWidth, targetHeight, m_tonemapSRV, pState->CASState, pState->usePackedMath);
 
     m_UploadHeap.FlushAndFinish();
@@ -385,18 +343,15 @@ void CAS_Renderer::OnDestroyWindowSizeDependentResources()
 {
     m_bloom.OnDestroyWindowSizeDependentResources();
     m_downSample.OnDestroyWindowSizeDependentResources();
+    m_TAA.OnDestroyWindowSizeDependentResources();
     m_CAS.OnDestroyWindowSizeDependentResources();
 
-    m_HDR.OnDestroy();
-    m_HDRMSAA.OnDestroy();
-    m_depthBuffer.OnDestroy();
+    m_renderPassJustDepthAndHdr.OnDestroyWindowSizeDependentResources();
+    m_renderPassFullGBuffer.OnDestroyWindowSizeDependentResources();
+    m_GBuffer.OnDestroyWindowSizeDependentResources();
 
-    vkDestroyFramebuffer(m_pDevice->GetDevice(), m_frameBuffer_HDR_MSAA, nullptr);
     vkDestroyFramebuffer(m_pDevice->GetDevice(), m_frameBuffer_tonemap, nullptr);
 
-    vkDestroyImageView(m_pDevice->GetDevice(), m_depthBufferView, nullptr);
-    vkDestroyImageView(m_pDevice->GetDevice(), m_HDRMSAASRV, nullptr);
-    vkDestroyImageView(m_pDevice->GetDevice(), m_HDRSRV, nullptr);
     m_tonemapTexture.OnDestroy();
     vkDestroyImageView(m_pDevice->GetDevice(), m_tonemapSRV, nullptr);
 }
@@ -466,18 +421,16 @@ int CAS_Renderer::LoadScene(GLTFCommon *pGLTFCommon, int stage)
         m_pGltfPBR = new GltfPbrPass();
         m_pGltfPBR->OnCreate(
             m_pDevice,
-            m_render_pass_HDR_MSAA,
             &m_UploadHeap,
             &m_resourceViewHeaps,
             &m_ConstantBufferRing,
             &m_VidMemBufferPool,
             m_pGLTFTexturesAndBuffers,
             &m_skyDome,
-            m_shadowMapSRV,
-            true,
-            false,
-            false,
-            VK_SAMPLE_COUNT_4_BIT
+            false, // use SSAO mask
+            std::vector<VkImageView>({ m_shadowMapSRV }),
+            &m_renderPassFullGBuffer,
+            &m_asyncPool
         );
 #if (USE_VID_MEM==true)
         m_VidMemBufferPool.UploadData(m_UploadHeap.GetCommandList());
@@ -492,7 +445,7 @@ int CAS_Renderer::LoadScene(GLTFCommon *pGLTFCommon, int stage)
         m_pGltfBBox = new GltfBBoxPass();
         m_pGltfBBox->OnCreate(
             m_pDevice,
-            m_render_pass_HDR_MSAA,
+            m_renderPassJustDepthAndHdr.GetRenderPass(),
             &m_resourceViewHeaps,
             &m_ConstantBufferRing,
             &m_VidMemBufferPool,
@@ -568,7 +521,6 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
     // Let our resource managers do some house keeping
     //
     m_ConstantBufferRing.OnBeginFrame();
-    m_CommandListRing.OnBeginFrame();
 
     // command buffer calls
     //
@@ -586,6 +538,10 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
 
     m_GPUTimer.OnBeginFrame(cmd_buf, &m_TimeStamps);
 
+    // Projection jitter is required for TAA.
+    static uint32_t Seed;
+    pState->camera.SetProjectionJitter(pState->renderWidth, pState->renderHeight, Seed);
+
     // Sets the perFrame data (Camera and lights data), override as necessary and set them as constant buffers --------------
     //
     per_frame *pPerFrame = NULL;
@@ -594,10 +550,10 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
         pPerFrame = m_pGLTFTexturesAndBuffers->m_pGLTFCommon->SetPerFrameData(pState->camera);
 
         //override gltf camera with ours
-        pPerFrame->mCameraViewProj = pState->camera.GetView() * pState->camera.GetProjection();
-        pPerFrame->cameraPos = pState->camera.GetPosition();
         pPerFrame->iblFactor = pState->iblFactor;
         pPerFrame->emmisiveFactor = pState->emmisiveFactor;
+        pPerFrame->invScreenResolution[0] = 1.0f / ((float)pState->renderWidth);
+        pPerFrame->invScreenResolution[1] = 1.0f / ((float)pState->renderHeight);
 
         //if the gltf doesn't have any lights set some spotlights
         if (pPerFrame->lightCount == 0)
@@ -605,9 +561,9 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
             pPerFrame->lightCount = pState->spotlightCount;
             for (uint32_t i = 0; i < pState->spotlightCount; i++)
             {
-                pPerFrame->lights[i].color[0] = pState->spotlight[i].color.x;
-                pPerFrame->lights[i].color[1] = pState->spotlight[i].color.y;
-                pPerFrame->lights[i].color[2] = pState->spotlight[i].color.z;
+                pPerFrame->lights[i].color[0] = pState->spotlight[i].color.getX();
+                pPerFrame->lights[i].color[1] = pState->spotlight[i].color.getY();
+                pPerFrame->lights[i].color[2] = pState->spotlight[i].color.getZ();
 
                 GetXYZ(pPerFrame->lights[i].position, pState->spotlight[i].light.GetPosition());
                 GetXYZ(pPerFrame->lights[i].direction, pState->spotlight[i].light.GetDirection());
@@ -636,6 +592,8 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
 
         m_pGLTFTexturesAndBuffers->SetSkinningMatricesForSkeletons();
     }
+
+    m_GPUTimer.GetTimeStamp(cmd_buf, "Begin Frame");
 
     // Render to shadow map atlas for spot lights ------------------------------------------
     //
@@ -695,187 +653,131 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
     //
     SetPerfMarkerBegin(cmd_buf, "Color pass");
 
+    VkRect2D renderArea = { 0, 0, pState->renderWidth, pState->renderHeight };
     if (pPerFrame != NULL)
     {
+        std::vector<GltfPbrPass::BatchList> opaque, transparent;
+        m_pGltfPBR->BuildBatchLists(&opaque, &transparent);
+
+        // Render opaque 
+        //
         {
-            m_GPUTimer.GetTimeStamp(cmd_buf, "before color RP");
-            VkClearValue clear_values[2];
-            clear_values[0].color.float32[0] = 0.0f;
-            clear_values[0].color.float32[1] = 0.0f;
-            clear_values[0].color.float32[2] = 0.0f;
-            clear_values[0].color.float32[3] = 0.0f;
-            clear_values[1].depthStencil.depth = 1.0f;
-            clear_values[1].depthStencil.stencil = 0;
+            m_renderPassFullGBuffer.BeginPass(cmd_buf, renderArea);
 
-            VkRenderPassBeginInfo rp_begin;
-            rp_begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-            rp_begin.pNext = NULL;
-            rp_begin.renderPass = m_render_pass_HDR_MSAA;
-            rp_begin.framebuffer = m_frameBuffer_HDR_MSAA;
-            rp_begin.renderArea.offset.x = 0;
-            rp_begin.renderArea.offset.y = 0;
-            rp_begin.renderArea.extent.width = pState->renderWidth;
-            rp_begin.renderArea.extent.height = pState->renderHeight;
-            rp_begin.clearValueCount = 2;
-            rp_begin.pClearValues = clear_values;
+            m_pGltfPBR->DrawBatchList(cmd_buf, &opaque);
+            m_GPUTimer.GetTimeStamp(cmd_buf, "PBR Opaque");
 
-            vkCmdBeginRenderPass(cmd_buf, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
-
-            vkCmdSetScissor(cmd_buf, 0, 1, &m_scissor);
-            vkCmdSetViewport(cmd_buf, 0, 1, &m_viewport);
-            m_GPUTimer.GetTimeStamp(cmd_buf, "after color RP");
+            m_renderPassFullGBuffer.EndPass(cmd_buf);
         }
 
         // Render skydome
         //
-        if (pState->skyDomeType == 1)
         {
-            SetPerfMarkerBegin(cmd_buf, "Skydome cube");
+            m_renderPassJustDepthAndHdr.BeginPass(cmd_buf, renderArea);
 
-            XMMATRIX clipToView = XMMatrixInverse(NULL, pPerFrame->mCameraViewProj);
-            m_skyDome.Draw(cmd_buf, clipToView);
-
-            m_GPUTimer.GetTimeStamp(cmd_buf, "Skydome cube");
-            SetPerfMarkerEnd(cmd_buf);
-        }
-        else if (pState->skyDomeType == 0)
-        {
-            SetPerfMarkerBegin(cmd_buf, "Skydome Proc");
-
-            SkyDomeProc::Constants skyDomeConstants;
-            skyDomeConstants.invViewProj = XMMatrixInverse(NULL, pPerFrame->mCameraViewProj);
-            skyDomeConstants.vSunDirection = XMVectorSet(1.0f, 0.05f, 0.0f, 0.0f);
-            skyDomeConstants.turbidity = 10.0f;
-            skyDomeConstants.rayleigh = 2.0f;
-            skyDomeConstants.mieCoefficient = 0.005f;
-            skyDomeConstants.mieDirectionalG = 0.8f;
-            skyDomeConstants.luminance = 1.0f;
-            skyDomeConstants.sun = false;
-            m_skyDomeProc.Draw(cmd_buf, skyDomeConstants);
-
-            m_GPUTimer.GetTimeStamp(cmd_buf, "Skydome Proc");
-            SetPerfMarkerEnd(cmd_buf);
-        }
-
-        // Render scene to color buffer
-        //
-        if (m_pGltfBBox && pPerFrame != NULL)
-        {
-            SetPerfMarkerBegin(cmd_buf, "gltfPBR");
-
+            if (pState->skyDomeType == 1)
             {
-                m_pGltfPBR->Draw(cmd_buf);
-                m_GPUTimer.GetTimeStamp(cmd_buf, "Rendering Scene");
+                math::Matrix4 clipToView = math::inverse(pPerFrame->mCameraCurrViewProj);
+                m_skyDome.Draw(cmd_buf, clipToView);
+
+                m_GPUTimer.GetTimeStamp(cmd_buf, "Skydome cube");
+            }
+            else if (pState->skyDomeType == 0)
+            {
+                SkyDomeProc::Constants skyDomeConstants;
+                skyDomeConstants.invViewProj = math::inverse(pPerFrame->mCameraCurrViewProj);
+                skyDomeConstants.vSunDirection = math::Vector4(1.0f, 0.05f, 0.0f, 0.0f);
+                skyDomeConstants.turbidity = 10.0f;
+                skyDomeConstants.rayleigh = 2.0f;
+                skyDomeConstants.mieCoefficient = 0.005f;
+                skyDomeConstants.mieDirectionalG = 0.8f;
+                skyDomeConstants.luminance = 1.0f;
+                m_skyDomeProc.Draw(cmd_buf, skyDomeConstants);
+
+                m_GPUTimer.GetTimeStamp(cmd_buf, "Skydome Proc");
             }
 
-            SetPerfMarkerEnd(cmd_buf);
+            m_renderPassJustDepthAndHdr.EndPass(cmd_buf);
+        }
+
+        // draw transparent geometry
+        //
+        {
+            m_renderPassFullGBuffer.BeginPass(cmd_buf, renderArea);
+
+            std::sort(transparent.begin(), transparent.end());
+            m_pGltfPBR->DrawBatchList(cmd_buf, &transparent);
+            m_GPUTimer.GetTimeStamp(cmd_buf, "PBR Transparent");
+
+            //m_GBuffer.EndPass(cmd_buf);
+            m_renderPassFullGBuffer.EndPass(cmd_buf);
         }
 
         // draw object's bounding boxes
         //
-        if (m_pGltfBBox && pPerFrame != NULL)
         {
-            if (pState->bDrawBoundingBoxes)
+            m_renderPassJustDepthAndHdr.BeginPass(cmd_buf, renderArea);
+
+            if (m_pGltfBBox)
             {
-                SetPerfMarkerBegin(cmd_buf, "bounding boxes");
+                if (pState->bDrawBoundingBoxes)
+                {
+                    m_pGltfBBox->Draw(cmd_buf, pPerFrame->mCameraCurrViewProj);
 
-                m_pGltfBBox->Draw(cmd_buf, pPerFrame->mCameraViewProj);
+                    m_GPUTimer.GetTimeStamp(cmd_buf, "Bounding Box");
+                }
+            }
 
-                m_GPUTimer.GetTimeStamp(cmd_buf, "Bounding Box");
+            // draw light's frustums
+            //
+            if (pState->bDrawLightFrustum && pPerFrame != NULL)
+            {
+                SetPerfMarkerBegin(cmd_buf, "light frustums");
+
+                math::Vector4 vCenter = math::Vector4(0.0f, 0.0f, 0.5f, 0.0f);
+                math::Vector4 vRadius = math::Vector4(1.0f, 1.0f, 0.5f, 0.0f);
+                math::Vector4 vColor = math::Vector4(1.0f, 1.0f, 1.0f, 1.0f);
+                for (uint32_t i = 0; i < pPerFrame->lightCount; i++)
+                {
+                    math::Matrix4 spotlightMatrix = math::inverse(pPerFrame->lights[i].mLightViewProj);
+                    math::Matrix4 worldMatrix = pPerFrame->mCameraCurrViewProj * spotlightMatrix;
+                    m_wireframeBox.Draw(cmd_buf, &m_wireframe, worldMatrix, vCenter, vRadius, vColor);
+                }
+
+                m_GPUTimer.GetTimeStamp(cmd_buf, "Light's frustum");
 
                 SetPerfMarkerEnd(cmd_buf);
             }
+
+            m_renderPassJustDepthAndHdr.EndPass(cmd_buf);
         }
-
-        // draw light's frustums
-        //
-        if (pState->bDrawLightFrustum && pPerFrame != NULL)
-        {
-            SetPerfMarkerBegin(cmd_buf, "light frustrum");
-
-            XMVECTOR vCenter = XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f);
-            XMVECTOR vRadius = XMVectorSet(1.0f, 1.0f, 1.0f, 0.0f);
-            XMVECTOR vColor = XMVectorSet(1.0f, 1.0f, 1.0f, 1.0f);
-            for (uint32_t i = 0; i < pPerFrame->lightCount; i++)
-            {
-                XMMATRIX spotlightMatrix = XMMatrixInverse(NULL, pPerFrame->lights[i].mLightViewProj);
-                XMMATRIX worldMatrix = spotlightMatrix * pPerFrame->mCameraViewProj;
-                m_wireframeBox.Draw(cmd_buf, &m_wireframe, worldMatrix, vCenter, vRadius, vColor);
-            }
-
-            m_GPUTimer.GetTimeStamp(cmd_buf, "Light's frustum");
-
-            SetPerfMarkerEnd(cmd_buf);
-        }
-
-        vkCmdEndRenderPass(cmd_buf);
     }
+    else
+    {
+        m_renderPassFullGBuffer.BeginPass(cmd_buf, renderArea);
+        m_renderPassFullGBuffer.EndPass(cmd_buf);
+        m_renderPassJustDepthAndHdr.BeginPass(cmd_buf, renderArea);
+        m_renderPassJustDepthAndHdr.EndPass(cmd_buf);
+    }
+
+    VkImageMemoryBarrier barrier[1] = {};
+    barrier[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier[0].pNext = NULL;
+    barrier[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barrier[0].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier[0].oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    barrier[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier[0].subresourceRange.baseMipLevel = 0;
+    barrier[0].subresourceRange.levelCount = 1;
+    barrier[0].subresourceRange.baseArrayLayer = 0;
+    barrier[0].subresourceRange.layerCount = 1;
+    barrier[0].image = m_GBuffer.m_HDR.Resource();
+    vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 1, barrier);
 
     SetPerfMarkerEnd(cmd_buf);
-
-    // Resolve MSAA ------------------------------------------------------------------------
-    //
-    {
-        SetPerfMarkerBegin(cmd_buf, "resolve MSAA");
-        {
-            VkImageMemoryBarrier barrier = {};
-            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            barrier.pNext = NULL;
-            barrier.srcAccessMask = 0;
-            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            barrier.subresourceRange.baseMipLevel = 0;
-            barrier.subresourceRange.levelCount = 1;
-            barrier.subresourceRange.baseArrayLayer = 0;
-            barrier.subresourceRange.layerCount = 1;
-            barrier.image = m_HDR.Resource();
-
-            vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
-        }
-
-        {
-            VkImageResolve re = {};
-            re.srcOffset.x = 0;
-            re.srcOffset.y = 0;
-            re.extent.width = pState->renderWidth;
-            re.extent.height = pState->renderHeight;
-            re.extent.depth = 1;
-            re.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            re.srcSubresource.layerCount = 1;
-            re.dstOffset.x = 0;
-            re.dstOffset.y = 0;
-            re.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            re.dstSubresource.layerCount = 1;
-            vkCmdResolveImage(cmd_buf, m_HDRMSAA.Resource(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_HDR.Resource(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &re);
-        }
-
-        {
-            VkImageMemoryBarrier barrier = {};
-            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            barrier.pNext = NULL;
-            barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; // we need to read from it for the post-processing
-            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            barrier.subresourceRange.baseMipLevel = 0;
-            barrier.subresourceRange.levelCount = 1;
-            barrier.subresourceRange.baseArrayLayer = 0;
-            barrier.subresourceRange.layerCount = 1;
-            barrier.image = m_HDR.Resource();
-
-            vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
-        }
-
-        m_GPUTimer.GetTimeStamp(cmd_buf, "Resolve");
-        SetPerfMarkerEnd(cmd_buf);
-    }
 
     // Post proc---------------------------------------------------------------------------
     //
@@ -897,10 +799,47 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
         m_GPUTimer.GetTimeStamp(cmd_buf, "bloom");
         SetPerfMarkerEnd(cmd_buf);
 
-        SetPerfMarkerEnd(cmd_buf);
-    }
 
-    SetPerfMarkerBegin(cmd_buf, "rendering to swap chain");
+        // Apply TAA & Sharpen to m_HDR
+        //
+        SetPerfMarkerBegin(cmd_buf, "TAA");
+        VkImageMemoryBarrier barrier = {};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.pNext = NULL;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+        barrier.image = m_GBuffer.m_DepthBuffer.Resource();
+
+        VkImageMemoryBarrier barriers[2];
+        barriers[0] = barrier;
+        barriers[0].oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        barriers[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barriers[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        barriers[0].image = m_GBuffer.m_DepthBuffer.Resource();
+
+        barriers[1] = barrier;
+        barriers[1].oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barriers[1].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barriers[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barriers[1].image = m_GBuffer.m_MotionVectors.Resource();
+
+        vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 2, barriers);
+
+        m_TAA.Draw(cmd_buf);
+        m_GPUTimer.GetTimeStamp(cmd_buf, "TAA");
+        SetPerfMarkerEnd(cmd_buf); // TAA
+
+        SetPerfMarkerEnd(cmd_buf); // post proc
+    }
 
     // Tonemapping ------------------------------------------------------------------------
     //
@@ -926,7 +865,7 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
         vkCmdSetScissor(cmd_buf, 0, 1, &m_scissor);
         vkCmdSetViewport(cmd_buf, 0, 1, &m_viewport);
 
-        m_toneMapping.Draw(cmd_buf, m_HDRSRV, pState->exposure, pState->toneMapper);
+        m_toneMapping.Draw(cmd_buf, m_GBuffer.m_HDRSRV, pState->exposure, pState->toneMapper);
         vkCmdEndRenderPass(cmd_buf);
 
         m_GPUTimer.GetTimeStamp(cmd_buf, "Tone mapping");
@@ -934,9 +873,33 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
         SetPerfMarkerEnd(cmd_buf);
     }
 
+    // submit command buffer
+    {
+        VkResult res = vkEndCommandBuffer(cmd_buf);
+        assert(res == VK_SUCCESS);
+
+        VkSubmitInfo submit_info;
+        submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit_info.pNext = NULL;
+        submit_info.waitSemaphoreCount = 0;
+        submit_info.pWaitSemaphores = NULL;
+        submit_info.pWaitDstStageMask = NULL;
+        submit_info.commandBufferCount = 1;
+        submit_info.pCommandBuffers = &cmd_buf;
+        submit_info.signalSemaphoreCount = 0;
+        submit_info.pSignalSemaphores = NULL;
+        res = vkQueueSubmit(m_pDevice->GetGraphicsQueue(), 1, &submit_info, VK_NULL_HANDLE);
+        assert(res == VK_SUCCESS);
+    }
+
     // Cas ------------------------------------------------------------------------
     //
     int imageIndex = pSwapChain->WaitForSwapChain();
+
+    m_CommandListRing.OnBeginFrame();
+
+    cmd_buf = m_CommandListRing.GetNewCommandList();
+
     {
         m_CAS.Upscale(cmd_buf, m_tonemapTexture, m_tonemapSRV, pState->CASState != CAS_State_NoCas, pState->usePackedMath, pState->CASState);
         m_GPUTimer.GetTimeStamp(cmd_buf, "CAS");

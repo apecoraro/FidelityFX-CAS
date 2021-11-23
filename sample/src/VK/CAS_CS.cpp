@@ -81,19 +81,19 @@ namespace CAS_SAMPLE_VK
                 defines["CAS_SAMPLE_FP16"] = "1";
 
                 defines["CAS_SAMPLE_SHARPEN_ONLY"] = "1";
-                m_casPackedSharpenOnly.OnCreate(pDevice, "CAS_Shader.glsl", "main", m_upscaleDescriptorSetLayout, 64, 1, 1, &defines);
+                m_casPackedSharpenOnly.OnCreate(pDevice, "CAS_Shader.glsl", "main", "", m_upscaleDescriptorSetLayout, 64, 1, 1, &defines);
 
                 defines["CAS_SAMPLE_SHARPEN_ONLY"] = "0";
-                m_casPackedUpsample.OnCreate(pDevice, "CAS_Shader.glsl", "main", m_upscaleDescriptorSetLayout, 64, 1, 1, &defines);
+                m_casPackedUpsample.OnCreate(pDevice, "CAS_Shader.glsl", "main", "", m_upscaleDescriptorSetLayout, 64, 1, 1, &defines);
             }
 
             defines["CAS_SAMPLE_FP16"] = "0";
 
             defines["CAS_SAMPLE_SHARPEN_ONLY"] = "1";
-            m_casSharpenOnly.OnCreate(pDevice, "CAS_Shader.glsl", "main", m_upscaleDescriptorSetLayout, 64, 1, 1, &defines);
+            m_casSharpenOnly.OnCreate(pDevice, "CAS_Shader.glsl", "main", "", m_upscaleDescriptorSetLayout, 64, 1, 1, &defines);
 
             defines["CAS_SAMPLE_SHARPEN_ONLY"] = "0";
-            m_casUpsample.OnCreate(pDevice, "CAS_Shader.glsl", "main", m_upscaleDescriptorSetLayout, 64, 1, 1, &defines);
+            m_casUpsample.OnCreate(pDevice, "CAS_Shader.glsl", "main", "", m_upscaleDescriptorSetLayout, 64, 1, 1, &defines);
         }
 
         {
@@ -107,7 +107,7 @@ namespace CAS_SAMPLE_VK
             m_pResourceViewHeaps->CreateDescriptorSetLayout(&layoutBindings, &m_renderDescriptorSetLayout);
             m_pResourceViewHeaps->AllocDescriptor(m_renderDescriptorSetLayout, &m_renderSrcSRVDescriptorSet);
             m_pResourceViewHeaps->AllocDescriptor(m_renderDescriptorSetLayout, &m_renderDstSRVDescriptorSet);
-            m_renderFullscreen.OnCreate(pDevice, renderPass, "CAS_RenderPS.glsl", pStaticBufferPool, pDynamicBufferRing, m_renderDescriptorSetLayout);
+            m_renderFullscreen.OnCreate(pDevice, renderPass, "CAS_RenderPS.glsl", "main", "", pStaticBufferPool, pDynamicBufferRing, m_renderDescriptorSetLayout);
         }
 
         m_dstLayoutUndefined = false;
@@ -302,22 +302,22 @@ namespace CAS_SAMPLE_VK
             {
                 if (casState == CAS_State_SharpenOnly)
                 {
-                    m_casPackedSharpenOnly.Draw(cmd_buf, constsHandle, m_upscaleDescriptorSet, dispatchX, dispatchY, 1);
+                    m_casPackedSharpenOnly.Draw(cmd_buf, &constsHandle, m_upscaleDescriptorSet, dispatchX, dispatchY, 1);
                 }
                 else if (casState == CAS_State_Upsample)
                 {
-                    m_casPackedUpsample.Draw(cmd_buf, constsHandle, m_upscaleDescriptorSet, dispatchX, dispatchY, 1);
+                    m_casPackedUpsample.Draw(cmd_buf, &constsHandle, m_upscaleDescriptorSet, dispatchX, dispatchY, 1);
                 }
             }
             else
             {
                 if (casState == CAS_State_SharpenOnly)
                 {
-                    m_casSharpenOnly.Draw(cmd_buf, constsHandle, m_upscaleDescriptorSet, dispatchX, dispatchY, 1);
+                    m_casSharpenOnly.Draw(cmd_buf, &constsHandle, m_upscaleDescriptorSet, dispatchX, dispatchY, 1);
                 }
                 else if (casState == CAS_State_Upsample)
                 {
-                    m_casUpsample.Draw(cmd_buf, constsHandle, m_upscaleDescriptorSet, dispatchX, dispatchY, 1);
+                    m_casUpsample.Draw(cmd_buf, &constsHandle, m_upscaleDescriptorSet, dispatchX, dispatchY, 1);
                 }
             }
 

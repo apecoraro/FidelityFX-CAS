@@ -29,11 +29,23 @@ const bool VALIDATION_ENABLED = false;
 
 CAS_Sample::CAS_Sample(LPCSTR name) : FrameworkWindows(name)
 {
-    m_lastFrameTime = MillisecondsNow();
     m_time = 0;
     m_bPlay = true;
 
     m_pGltfLoader = NULL;
+}
+
+void CAS_Sample::OnParseCommandLine(LPSTR lpCmdLine, uint32_t* pWidth, uint32_t* pHeight)
+{
+    // set some default values
+    *pWidth = 1920;
+    *pHeight = 1080;
+    m_VsyncEnabled = false;
+    m_isCpuValidationLayerEnabled = true;
+    m_isGpuValidationLayerEnabled = false;
+    m_stablePowerState = false;
+
+    // TODO do we need to support json config file like other samples?
 }
 
 //--------------------------------------------------------------------------------------
@@ -41,19 +53,10 @@ CAS_Sample::CAS_Sample(LPCSTR name) : FrameworkWindows(name)
 // OnCreate
 //
 //--------------------------------------------------------------------------------------
-void CAS_Sample::OnCreate(HWND hWnd)
+void CAS_Sample::OnCreate()
 {
-    // Create Device
-    //
-    m_device.OnCreate("CAS VK Sample v1.0", "CAS VK Engine v1.0", VALIDATION_ENABLED, hWnd);
-    m_device.CreatePipelineCache();
-
     //init the shader compiler
     CreateShaderCache();
-
-    // Create Swapchain
-    //
-    m_swapChain.OnCreate(&m_device, cNumSwapBufs, hWnd);
 
     // Create a instance of the renderer and initialize it, we need to do that for each GPU
     //
@@ -62,7 +65,7 @@ void CAS_Sample::OnCreate(HWND hWnd)
 
     // init GUI (non gfx stuff)
     //
-    ImGUI_Init(reinterpret_cast<void *>(hWnd));
+    ImGUI_Init((void*)m_windowHwnd);
 
     // Init Camera, looking at the origin
     //
@@ -78,21 +81,22 @@ void CAS_Sample::OnCreate(HWND hWnd)
     m_state.emmisiveFactor = 1.0f;
     m_state.bDrawLightFrustum = false;
     m_state.bDrawBoundingBoxes = false;
-    m_state.camera.LookAt(m_roll, m_pitch, m_distance, XMVectorSet(0, 0, 0, 0));
+    m_state.camera.LookAt(m_roll, m_pitch, m_distance, math::Vector4(0, 0, 0, 0));
+
+    // NOTE: Init render width/height and display mode
+    m_state.usePackedMath = false;
+    m_state.CASState = CAS_State_NoCas;
+    m_state.renderWidth = 0;
+    m_state.renderHeight = 0;
+    m_state.sharpenControl = 0.0f;
+    m_state.profiling = false;
 
     m_state.spotlightCount = 1;
 
     m_state.spotlight[0].intensity = 10.0f;
-    m_state.spotlight[0].color = XMFLOAT4(1.0f, 1.0f, 1.0f, 0.0f);
+    m_state.spotlight[0].color = math::Vector4(1.0f, 1.0f, 1.0f, 0.0f);
     m_state.spotlight[0].light.SetFov(XM_PI / 2.0f, 1024, 1024, 0.1f, 100.0f);
-    m_state.spotlight[0].light.LookAt(XM_PI / 2.0f, 0.58f, 3.5f, XMVectorSet(0, 0, 0, 0));
-
-    m_state.sharpenControl = 0.0f;
-    m_state.renderWidth = 0;
-    m_state.renderHeight = 0;
-    m_state.CASState = CAS_State_NoCas;
-    m_state.usePackedMath = false;
-    m_state.profiling = false;
+    m_state.spotlight[0].light.LookAt(XM_PI / 2.0f, 0.58f, 3.5f, math::Vector4(0, 0, 0, 0));
 
     // Init profiling state
     m_CASTimingsCurrId = 0;
@@ -110,21 +114,14 @@ void CAS_Sample::OnDestroy()
 
     m_device.GPUFlush();
 
-    // Fullscreen state should always be false before exiting the app.
-    m_swapChain.SetFullScreen(false);
-
-    m_pNode->UnloadScene();
-    m_pNode->OnDestroyWindowSizeDependentResources();
-    m_pNode->OnDestroy();
-
     if (m_pNode)
     {
+        m_pNode->UnloadScene();
+        m_pNode->OnDestroyWindowSizeDependentResources();
+        m_pNode->OnDestroy();
         delete m_pNode;
-        m_pNode = 0;
+        m_pNode = nullptr;
     }
-
-    m_swapChain.OnDestroyWindowSizeDependentResources();
-    m_swapChain.OnDestroy();
 
     //shut down the shader compiler
     DestroyShaderCache(&m_device);
@@ -132,11 +129,8 @@ void CAS_Sample::OnDestroy()
     if (m_pGltfLoader)
     {
         delete m_pGltfLoader;
-        m_pGltfLoader = NULL;
+        m_pGltfLoader = nullptr;
     }
-
-    m_device.DestroyPipelineCache();
-    m_device.OnDestroy();
 }
 
 //--------------------------------------------------------------------------------------
@@ -148,19 +142,8 @@ bool CAS_Sample::OnEvent(MSG msg)
 {
     if (ImGUI_WndProcHandler(msg.hwnd, msg.message, msg.wParam, msg.lParam))
         return true;
+
     return true;
-}
-
-//--------------------------------------------------------------------------------------
-//
-// SetFullScreen
-//
-//--------------------------------------------------------------------------------------
-void CAS_Sample::SetFullScreen(bool fullscreen)
-{
-    m_device.GPUFlush();
-
-    m_swapChain.SetFullScreen(fullscreen);
 }
 
 //--------------------------------------------------------------------------------------
@@ -168,44 +151,36 @@ void CAS_Sample::SetFullScreen(bool fullscreen)
 // OnResize
 //
 //--------------------------------------------------------------------------------------
-void CAS_Sample::OnResize(uint32_t width, uint32_t height)
+void CAS_Sample::OnResize(bool resizeRender)
 {
-    if (m_Width != width || m_Height != height)
+    if (resizeRender && m_Width && m_Height)
     {
-        // Flush GPU
-        //
-        m_device.GPUFlush();
-
-        // If resizing but no minimizing
-        //
-        if (m_Width > 0 && m_Height > 0)
+        if (m_pNode != nullptr)
         {
             m_pNode->OnDestroyWindowSizeDependentResources();
-            m_swapChain.OnDestroyWindowSizeDependentResources();
         }
-
-        m_Width = width;
-        m_Height = height;
 
         // NOTE: Reset render width/height and display mode
         {
             std::vector<ResolutionInfo> supportedResolutions = {};
             CAS_Filter::GetSupportedResolutions(m_Width, m_Height, supportedResolutions);
 
-            m_currDisplayMode = 0;
-            m_state.renderWidth = supportedResolutions[m_currDisplayMode].Width;
-            m_state.renderHeight = supportedResolutions[m_currDisplayMode].Height;
+            if (supportedResolutions.size() > 0)
+            {
+                if (m_curResolutionIndex >= supportedResolutions.size())
+                    m_curResolutionIndex = 0u;
+
+                m_state.renderWidth = supportedResolutions[m_curResolutionIndex].Width;
+                m_state.renderHeight = supportedResolutions[m_curResolutionIndex].Height;
+            }
         }
 
-        // if resizing but not minimizing the recreate it with the new size
-        //
-        if (m_Width > 0 && m_Height > 0)
+        if (m_pNode != nullptr)
         {
-            m_swapChain.OnCreateWindowSizeDependentResources(m_Width, m_Height, false);
             m_pNode->OnCreateWindowSizeDependentResources(&m_swapChain, &m_state, m_Width, m_Height);
         }
     }
-    m_state.camera.SetFov(XM_PI / 4, m_Width, m_Height, 0.1f, 1000.0f);
+    m_state.camera.SetFov(AMD_PI_OVER_4, m_Width, m_Height, 0.1f, 1000.0f);
 }
 
 //--------------------------------------------------------------------------------------
@@ -216,11 +191,8 @@ void CAS_Sample::OnResize(uint32_t width, uint32_t height)
 
 void CAS_Sample::OnRender()
 {
-    // Get timings
-    //
-    double timeNow = MillisecondsNow();
-    m_deltaTime = timeNow - m_lastFrameTime;
-    m_lastFrameTime = timeNow;
+    // Do any start of frame stuff.
+    BeginFrame();
 
     // Build UI and set the scene state. Note that the rendering of the UI happens later.
     //
@@ -261,7 +233,7 @@ void CAS_Sample::OnRender()
 
         if (ImGui::CollapsingHeader("Model Selection", ImGuiTreeNodeFlags_DefaultOpen))
         {
-            const char * models[] = { "busterDrone", "BoomBox", "SciFiHelmet", "DamagedHelmet", "Sponza", "MetalRoughSpheres"};
+            const char* models[] = { "busterDrone", "BoomBox", "SciFiHelmet", "DamagedHelmet", "Sponza", "MetalRoughSpheres" };
             static int selected = 3;
             if (ImGui::Combo("model", &selected, models, _countof(models)))
             {
@@ -284,32 +256,32 @@ void CAS_Sample::OnRender()
                 case 0:
                     m_state.iblFactor = 1.0f;
                     m_roll = 0.0f; m_pitch = 0.0f; m_distance = 3.5f;
-                    m_state.camera.LookAt(m_roll, m_pitch, m_distance, XMVectorSet(0, 0, 0, 0));
+                    m_state.camera.LookAt(m_roll, m_pitch, m_distance, math::Vector4(0, 0, 0, 0));
                     res = m_pGltfLoader->Load("..\\media\\buster_drone\\", "busterDrone.gltf"); break;
                 case 1:
                     m_state.iblFactor = 1.0f;
                     m_roll = 0.0f; m_pitch = 0.0f; m_distance = 3.5f;
-                    m_state.camera.LookAt(m_roll, m_pitch, m_distance, XMVectorSet(0, 0, 0, 0));
+                    m_state.camera.LookAt(m_roll, m_pitch, m_distance, math::Vector4(0, 0, 0, 0));
                     res = m_pGltfLoader->Load("..\\media\\BoomBox\\glTF\\", "BoomBox.gltf"); break;
                 case 2:
                     m_state.iblFactor = 1.0f;
                     m_roll = 0.0f; m_pitch = 0.0f; m_distance = 3.5f;
-                    m_state.camera.LookAt(m_roll, m_pitch, m_distance, XMVectorSet(0, 0, 0, 0));
+                    m_state.camera.LookAt(m_roll, m_pitch, m_distance, math::Vector4(0, 0, 0, 0));
                     res = m_pGltfLoader->Load("..\\media\\SciFiHelmet\\glTF\\", "SciFiHelmet.gltf"); break;
                 case 3:
                     m_state.iblFactor = 2.0f;
                     m_roll = 0.0f; m_pitch = 0.0f; m_distance = 3.5f;
-                    m_state.camera.LookAt(m_roll, m_pitch, m_distance, XMVectorSet(0, 0, 0, 0));
+                    m_state.camera.LookAt(m_roll, m_pitch, m_distance, math::Vector4(0, 0, 0, 0));
                     res = m_pGltfLoader->Load("..\\media\\DamagedHelmet\\glTF\\", "DamagedHelmet.gltf"); break;
                 case 4:
                     m_state.iblFactor = 0.362f;
                     m_pitch = 0.182035938f; m_roll = 1.92130506f; m_distance = 4.83333349f;
-                    m_state.camera.LookAt(m_roll, m_pitch, m_distance, XMVectorSet(0.703276634f, 1.02280307f, 0.218072295f, 0));
+                    m_state.camera.LookAt(m_roll, m_pitch, m_distance, math::Vector4(0.703276634f, 1.02280307f, 0.218072295f, 0));
                     res = m_pGltfLoader->Load("..\\media\\sponza\\gltf\\", "sponza.gltf"); break;
                 case 5:
                     m_state.iblFactor = 1.0f;
                     m_roll = 0.0f; m_pitch = 0.0f; m_distance = 16.0f;
-                    m_state.camera.LookAt(m_roll, m_pitch, m_distance, XMVectorSet(0, 0, 0, 0));
+                    m_state.camera.LookAt(m_roll, m_pitch, m_distance, math::Vector4(0, 0, 0, 0));
                     res = m_pGltfLoader->Load("..\\media\\MetalRoughSpheres\\glTF\\", "MetalRoughSpheres.gltf"); break;
                 }
 
@@ -340,8 +312,8 @@ void CAS_Sample::OnRender()
             return true;
         };
 
-        int oldDisplayMode = m_currDisplayMode;
-        ImGui::Combo("Render Dim", &m_currDisplayMode, itemsGetter, reinterpret_cast<void*>(&supportedResolutions.front()), static_cast<int>(supportedResolutions.size()));
+        m_prevResolutionIndex = m_curResolutionIndex;
+        ImGui::Combo("Render Dim", reinterpret_cast<int*>(&m_curResolutionIndex), itemsGetter, reinterpret_cast<void*>(&supportedResolutions.front()), static_cast<int>(supportedResolutions.size()));
 
         if (m_device.IsFp16Supported())
         {
@@ -371,10 +343,10 @@ void CAS_Sample::OnRender()
             m_state.CASState = CAS_State_SharpenOnly;
         }
 
-        if (oldDisplayMode != m_currDisplayMode || oldCasState != m_state.CASState)
+        if (m_prevResolutionIndex != m_curResolutionIndex || oldCasState != m_state.CASState)
         {
-            m_state.renderWidth = supportedResolutions[m_currDisplayMode].Width;
-            m_state.renderHeight = supportedResolutions[m_currDisplayMode].Height;
+            m_state.renderWidth = supportedResolutions[m_curResolutionIndex].Width;
+            m_state.renderHeight = supportedResolutions[m_curResolutionIndex].Height;
 
             m_device.GPUFlush();
             m_pNode->OnDestroyWindowSizeDependentResources();
@@ -400,26 +372,38 @@ void CAS_Sample::OnRender()
             std::vector<TimeStamp> timeStamps = m_pNode->GetTimingValues();
             if (timeStamps.size() > 0)
             {
-                for (uint32_t i = 1; i < timeStamps.size(); i++)
+                for (uint32_t i = 1; i < timeStamps.size() - 1; i++)
                 {
-                    float DeltaTime = ((float)(timeStamps[i].m_microseconds - timeStamps[i - 1].m_microseconds));
+                    float DeltaTime = timeStamps[i].m_microseconds;
+                    ImGui::Text("%-17s: %7.1f us", timeStamps[i].m_label.c_str(), DeltaTime);
                     if (strcmp("CAS", timeStamps[i].m_label.c_str()) == 0)
                     {
                         CASTime = DeltaTime;
                     }
-
-                    ImGui::Text("%-17s: %7.1f us", timeStamps[i].m_label.c_str(), DeltaTime);
                 }
 
                 //scrolling data and average computing
-                static float values[128];
-                values[127] = static_cast<float>(timeStamps.back().m_microseconds - timeStamps.front().m_microseconds);
-                float average = values[0];
-                for (uint32_t i = 0; i < 128 - 1; i++) { values[i] = values[i + 1]; average += values[i]; }
-                average /= 128;
+                static float values[128] = { 0.0f };
+                float minTotal = FLT_MAX;
+                float maxTotal = -1.0f;
+                // Copy previous total times one element to the left.
+                for (uint32_t i = 0; i < 128 - 1; i++)
+                {
+                    values[i] = values[i + 1];
+                    if (values[i] < minTotal)
+                        minTotal = values[i];
+                    if (values[i] > maxTotal)
+                        maxTotal = values[i];
+                }
+                // Store current total time at end.
+                values[127] = timeStamps.back().m_microseconds;
 
-                ImGui::Text("%-17s: %7.1f us", "TotalGPUTime", average);
-                ImGui::PlotLines("", values, 128, 0, "", 0.0f, 30000.0f, ImVec2(0, 80));
+                // round down to nearest 1000.0f
+                float rangeStart = static_cast<uint32_t>(minTotal / 1000.0f) * 1000.0f;
+                // round maxTotal up to nearest 10,000.0f
+                float rangeStop = (static_cast<uint32_t>(maxTotal / 10000.0f) * 10000.0f) + 10000.0f;
+
+                ImGui::PlotLines("", values, 128, 0, "", rangeStart, rangeStop, ImVec2(0, 80));
             }
         }
 
@@ -439,12 +423,11 @@ void CAS_Sample::OnRender()
             }
         }
 
-        bool isHit = ImGui::Button("Start Timing", { 150, 30 });
+        bool isHit = ImGui::Button("Update Avg", { 150, 30 });
         if (isHit)
         {
             m_state.profiling = true;
         }
-
         ImGui::Text("Avg Cas Time: %f", m_CASAvgTiming);
 
 #ifdef USE_VMA
@@ -512,7 +495,7 @@ void CAS_Sample::OnRender()
     if (m_pGltfLoader)
     {
         m_pGltfLoader->SetAnimationTime(0, m_time);
-        m_pGltfLoader->TransformScene(0, XMMatrixIdentity());
+        m_pGltfLoader->TransformScene(0, math::Matrix4::identity());
     }
 
     m_state.time = m_time;
@@ -540,6 +523,6 @@ int WINAPI WinMain(HINSTANCE hInstance,
     uint32_t Height = 720;
 
     // create new Vulkan sample
-    return RunFramework(hInstance, lpCmdLine, nCmdShow, Width, Height, new CAS_Sample(Name));
+    return RunFramework(hInstance, lpCmdLine, nCmdShow, new CAS_Sample(Name));
 }
 

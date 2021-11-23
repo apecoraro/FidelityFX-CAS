@@ -40,35 +40,33 @@ class CAS_Sample : public FrameworkWindows
 {
 public:
     CAS_Sample(LPCSTR name);
-    void OnCreate(HWND hWnd);
-    void OnDestroy();
-    void OnRender();
-    bool OnEvent(MSG msg);
-    void OnResize(uint32_t Width, uint32_t Height);
-    void SetFullScreen(bool fullscreen);
+    void OnParseCommandLine(LPSTR lpCmdLine, uint32_t* pWidth, uint32_t* pHeight);
+    void OnCreate() override;
+    void OnDestroy() override;
+    void OnRender() override;
+    bool OnEvent(MSG msg) override;
+    void OnResize(bool resizeRender) override;
+    void OnUpdateDisplay() override {};
     
 private:
-    Device m_device;
-    SwapChain             m_swapChain;
-
     GLTFCommon           *m_pGltfLoader;
 
-    CAS_Renderer         *m_pNode;
+    CAS_Renderer         *m_pNode = nullptr;
     CAS_Renderer::State   m_state;
 
-    float                 m_distance;
-    float                 m_roll;
-    float                 m_pitch;
+    uint32_t              m_curResolutionIndex = 0u;
+    uint32_t              m_prevResolutionIndex = m_curResolutionIndex;
 
-    float                 m_time;             // WallClock in seconds.
-    double                m_deltaTime;        // The elapsed time in milliseconds since the previous frame.
-    double                m_lastFrameTime;
+    float                 m_distance = 0.0f;
+    float                 m_roll = 0.0f;
+    float                 m_pitch = 0.0f;
 
-    bool                  m_bPlay;
-    int                   m_currDisplayMode;
+    float                 m_time = 0.0f;             // WallClock in seconds.
+
+    bool                  m_bPlay = true;
 
     // Profiling info for CAS
-    int                   m_CASTimingsCurrId;
-    float                 m_CASTimings[300];
-    float                 m_CASAvgTiming;
+    int                   m_CASTimingsCurrId = -1;
+    float                 m_CASTimings[120] = { 0.0f };
+    float                 m_CASAvgTiming = 0.0f;
 };

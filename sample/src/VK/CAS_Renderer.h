@@ -36,7 +36,7 @@ public:
     struct Spotlight
     {
         Camera light;
-        XMFLOAT4 color;
+        math::Vector4 color;
         float intensity;
     };
 
@@ -100,6 +100,12 @@ private:
     CommandListRing                 m_CommandListRing;
     GPUTimestamps                   m_GPUTimer;
 
+    AsyncPool                       m_asyncPool;
+    // GBuffer and render passes
+    GBuffer                         m_GBuffer;
+    GBufferRenderPass               m_renderPassFullGBuffer;
+    GBufferRenderPass               m_renderPassJustDepthAndHdr;
+
     //gltf passes
     GLTFTexturesAndBuffers         *m_pGLTFTexturesAndBuffers;
     GltfPbrPass                    *m_pGltfPBR;
@@ -112,30 +118,17 @@ private:
     DownSamplePS                    m_downSample;
     SkyDomeProc                     m_skyDomeProc;
     ToneMapping                     m_toneMapping;
+    TAA                             m_TAA;
     CAS_Filter                      m_CAS;
 
     // GUI
     ImGUI                           m_ImGUI;
-
-    // Temporary render targets
-
-    // depth buffer
-    Texture                         m_depthBuffer;
-    VkImageView                     m_depthBufferView;
 
     // shadowmaps
     Texture                         m_shadowMap;
     VkImageView                     m_shadowMapDSV;
     VkImageView                     m_shadowMapSRV;
 
-    // MSAA RT
-    Texture                         m_HDRMSAA;
-    VkImageView                     m_HDRSRV;
-    VkImageView                     m_HDRMSAASRV;
-
-    // Resolved RT
-    Texture                         m_HDR;
-    
     // Tone map RT
     Texture                         m_tonemapTexture;
     VkImageView                     m_tonemapSRV;
@@ -145,12 +138,10 @@ private:
     WireframeBox                    m_wireframeBox;
 
     VkRenderPass                    m_render_pass_shadow;
-    VkRenderPass                    m_render_pass_HDR_MSAA;
     VkRenderPass                    m_render_pass_tonemap;
     VkRenderPass                    m_render_pass_swap_chain;
 
     VkFramebuffer                   m_shadowMapBuffers;
-    VkFramebuffer                   m_frameBuffer_HDR_MSAA;
     VkFramebuffer                   m_frameBuffer_tonemap;
 
     std::vector<TimeStamp>          m_TimeStamps;
