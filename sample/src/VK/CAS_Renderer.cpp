@@ -38,11 +38,14 @@ void CAS_Renderer::OnCreate(Device *pDevice, SwapChain *pSwapChain)
     // Create a commandlist ring for the Direct queue
     m_CommandListRing.OnCreate(pDevice, cNumSwapBufs, 8);
 
-    // Create a 'dynamic' constant buffers ring
-    m_ConstantBufferRing.OnCreate(pDevice, cNumSwapBufs, 20 * 1024 * 1024, "Uniforms");
+    // Create a 'dynamic' constant buffer
+    const uint32_t constantBuffersMemSize = 200 * 1024 * 1024;
+    // TODO there is a validation error VUID-vkMapMemory-memory-00683 coming from this function, but it seems to happen in the FSR sample too.
+    m_ConstantBufferRing.OnCreate(pDevice, cNumSwapBufs, constantBuffersMemSize, "Uniforms");
 
     // Create a 'static' constant buffer pool
     m_VidMemBufferPool.OnCreate(pDevice, 128 * 1024 * 1024, USE_VID_MEM, "StaticGeom");
+    // TODO there is a validation error VUID-vkMapMemory-memory-00683 coming from this function, but it seems to happen in the FSR sample too.
     m_SysMemBufferPool.OnCreate(pDevice, 32 * 1024 , false, "PostProcGeom");
 
     // initialize the GPU time stamps module
@@ -68,12 +71,13 @@ void CAS_Renderer::OnCreate(Device *pDevice, SwapChain *pSwapChain)
 
         GBufferFlags fullGBuffer = GBUFFER_DEPTH | GBUFFER_FORWARD | GBUFFER_MOTION_VECTORS;
         bool bClear = true;
+        m_renderPassFullGBufferWithClear.OnCreate(&m_GBuffer, fullGBuffer, bClear, "m_renderPassFullGBufferWithClear");
         m_renderPassFullGBuffer.OnCreate(&m_GBuffer, fullGBuffer, !bClear, "m_renderPassFullGBuffer");
         m_renderPassJustDepthAndHdr.OnCreate(&m_GBuffer, GBUFFER_DEPTH | GBUFFER_FORWARD, !bClear, "m_renderPassJustDepthAndHdr");
     }
 
     // Create a Shadowmap atlas to hold 4 cascades/spotlights
-    m_shadowMap.InitDepthStencil(m_pDevice, 2*1024, 2 * 1024, VK_FORMAT_D32_SFLOAT, VK_SAMPLE_COUNT_1_BIT, "ShadowMap");
+    m_shadowMap.InitDepthStencil(m_pDevice, 2 * 1024, 2 * 1024, VK_FORMAT_D32_SFLOAT, VK_SAMPLE_COUNT_1_BIT, "ShadowMap");
     m_shadowMap.CreateSRV(&m_shadowMapSRV);
     m_shadowMap.CreateDSV(&m_shadowMapDSV);
 
@@ -100,12 +104,13 @@ void CAS_Renderer::OnCreate(Device *pDevice, SwapChain *pSwapChain)
         assert(res == VK_SUCCESS);
     }
 
-    m_skyDome.OnCreate(pDevice, m_renderPassJustDepthAndHdr.GetRenderPass(), &m_UploadHeap, VK_FORMAT_R16G16B16A16_SFLOAT, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, "..\\media\\envmaps\\papermill\\diffuse.dds", "..\\media\\envmaps\\papermill\\specular.dds", VK_SAMPLE_COUNT_4_BIT);
+    m_skyDome.OnCreate(pDevice, m_renderPassJustDepthAndHdr.GetRenderPass(), &m_UploadHeap, VK_FORMAT_R16G16B16A16_SFLOAT, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, "..\\media\\envmaps\\papermill\\diffuse.dds", "..\\media\\envmaps\\papermill\\specular.dds", VK_SAMPLE_COUNT_1_BIT);
     m_skyDomeProc.OnCreate(pDevice, m_renderPassJustDepthAndHdr.GetRenderPass(), &m_UploadHeap, VK_FORMAT_R16G16B16A16_SFLOAT, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, VK_SAMPLE_COUNT_1_BIT);
     m_wireframe.OnCreate(pDevice, m_renderPassJustDepthAndHdr.GetRenderPass(), &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, VK_SAMPLE_COUNT_1_BIT);
     m_wireframeBox.OnCreate(pDevice, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool);
     m_downSample.OnCreate(pDevice, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, VK_FORMAT_R16G16B16A16_SFLOAT);
     m_bloom.OnCreate(pDevice, &m_resourceViewHeaps, &m_ConstantBufferRing, &m_VidMemBufferPool, VK_FORMAT_R16G16B16A16_SFLOAT);
+    m_TAA.OnCreate(pDevice, &m_resourceViewHeaps, &m_VidMemBufferPool, &m_ConstantBufferRing, false);
 
     // Create tone map render pass
     {
@@ -153,12 +158,6 @@ void CAS_Renderer::OnCreate(Device *pDevice, SwapChain *pSwapChain)
     // Create tonemapping pass
     m_toneMapping.OnCreate(m_pDevice, m_render_pass_tonemap, &m_resourceViewHeaps, &m_SysMemBufferPool, &m_ConstantBufferRing);
 
-    // Create cas pass
-    m_CAS.OnCreate(m_pDevice, m_render_pass_swap_chain, pSwapChain->GetFormat(), &m_resourceViewHeaps, &m_SysMemBufferPool, &m_ConstantBufferRing);
-
-    // Initialize UI rendering resources
-    m_ImGUI.OnCreate(m_pDevice, m_render_pass_swap_chain, &m_UploadHeap, &m_ConstantBufferRing);
-
     // Create swapchain render pass
     {
         // color RT
@@ -192,6 +191,13 @@ void CAS_Renderer::OnCreate(Device *pDevice, SwapChain *pSwapChain)
         assert(res == VK_SUCCESS);
     }
 
+    // Create cas pass
+    // TODO this function is causing a validation error: VUID-VkShaderModuleCreateInfo-pCode-01091, but also happens in the FSR sample.
+    m_CAS.OnCreate(m_pDevice, m_render_pass_swap_chain, pSwapChain->GetFormat(), &m_resourceViewHeaps, &m_SysMemBufferPool, &m_ConstantBufferRing);
+
+    // Initialize UI rendering resources
+    m_ImGUI.OnCreate(m_pDevice, m_render_pass_swap_chain, &m_UploadHeap, &m_ConstantBufferRing);
+
     // Make sure upload heap has finished uploading before continuing
 #if (USE_VID_MEM==true)
     m_VidMemBufferPool.UploadData(m_UploadHeap.GetCommandList());
@@ -208,6 +214,7 @@ void CAS_Renderer::OnDestroy()
 {
     m_asyncPool.Flush();
 
+    m_TAA.OnDestroy();
     m_toneMapping.OnDestroy();
     m_ImGUI.OnDestroy();
     m_bloom.OnDestroy();
@@ -221,6 +228,7 @@ void CAS_Renderer::OnDestroy()
 
     m_renderPassJustDepthAndHdr.OnDestroy();
     m_renderPassFullGBuffer.OnDestroy();
+    m_renderPassFullGBufferWithClear.OnDestroy();
     m_GBuffer.OnDestroy();
 
     vkDestroyImageView(m_pDevice->GetDevice(), m_shadowMapDSV, nullptr);
@@ -290,10 +298,15 @@ void CAS_Renderer::OnCreateWindowSizeDependentResources(SwapChain *pSwapChain, S
     m_finalScissor.offset.x = 0;
     m_finalScissor.offset.y = 0;
 
+    // Create GBuffer
+    //
+    m_GBuffer.OnCreateWindowSizeDependentResources(pSwapChain, pState->renderWidth, pState->renderHeight);
+
     // Create frame buffers for the GBuffer render passes
     //
-    m_renderPassJustDepthAndHdr.OnCreateWindowSizeDependentResources(pState->renderWidth, pState->renderHeight);
+    m_renderPassFullGBufferWithClear.OnCreateWindowSizeDependentResources(pState->renderWidth, pState->renderHeight);
     m_renderPassFullGBuffer.OnCreateWindowSizeDependentResources(pState->renderWidth, pState->renderHeight);
+    m_renderPassJustDepthAndHdr.OnCreateWindowSizeDependentResources(pState->renderWidth, pState->renderHeight);
 
     // Update PostProcessing passes
     //
@@ -341,19 +354,26 @@ void CAS_Renderer::OnCreateWindowSizeDependentResources(SwapChain *pSwapChain, S
 //--------------------------------------------------------------------------------------
 void CAS_Renderer::OnDestroyWindowSizeDependentResources()
 {
-    m_bloom.OnDestroyWindowSizeDependentResources();
-    m_downSample.OnDestroyWindowSizeDependentResources();
-    m_TAA.OnDestroyWindowSizeDependentResources();
-    m_CAS.OnDestroyWindowSizeDependentResources();
+    if (m_Width && m_Height)
+    {
+        m_Width = 0u;
+        m_Height = 0u;
 
-    m_renderPassJustDepthAndHdr.OnDestroyWindowSizeDependentResources();
-    m_renderPassFullGBuffer.OnDestroyWindowSizeDependentResources();
-    m_GBuffer.OnDestroyWindowSizeDependentResources();
+        m_bloom.OnDestroyWindowSizeDependentResources();
+        m_downSample.OnDestroyWindowSizeDependentResources();
+        m_TAA.OnDestroyWindowSizeDependentResources();
+        m_CAS.OnDestroyWindowSizeDependentResources();
 
-    vkDestroyFramebuffer(m_pDevice->GetDevice(), m_frameBuffer_tonemap, nullptr);
+        m_renderPassJustDepthAndHdr.OnDestroyWindowSizeDependentResources();
+        m_renderPassFullGBuffer.OnDestroyWindowSizeDependentResources();
+        m_renderPassFullGBufferWithClear.OnDestroyWindowSizeDependentResources();
+        m_GBuffer.OnDestroyWindowSizeDependentResources();
 
-    m_tonemapTexture.OnDestroy();
-    vkDestroyImageView(m_pDevice->GetDevice(), m_tonemapSRV, nullptr);
+        vkDestroyFramebuffer(m_pDevice->GetDevice(), m_frameBuffer_tonemap, nullptr);
+
+        m_tonemapTexture.OnDestroy();
+        vkDestroyImageView(m_pDevice->GetDevice(), m_tonemapSRV, nullptr);
+    }
 }
 
 //--------------------------------------------------------------------------------------
@@ -429,7 +449,7 @@ int CAS_Renderer::LoadScene(GLTFCommon *pGLTFCommon, int stage)
             &m_skyDome,
             false, // use SSAO mask
             std::vector<VkImageView>({ m_shadowMapSRV }),
-            &m_renderPassFullGBuffer,
+            &m_renderPassFullGBufferWithClear,
             &m_asyncPool
         );
 #if (USE_VID_MEM==true)
@@ -536,10 +556,11 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
         assert(res == VK_SUCCESS);
     }
 
+    SetPerfMarkerBegin(cmd_buf, "OnRender");
     m_GPUTimer.OnBeginFrame(cmd_buf, &m_TimeStamps);
 
     // Projection jitter is required for TAA.
-    static uint32_t Seed;
+    uint32_t Seed;
     pState->camera.SetProjectionJitter(pState->renderWidth, pState->renderHeight, Seed);
 
     // Sets the perFrame data (Camera and lights data), override as necessary and set them as constant buffers --------------
@@ -646,7 +667,7 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
         }
         vkCmdEndRenderPass(cmd_buf);
 
-        SetPerfMarkerEnd(cmd_buf);
+        SetPerfMarkerEnd(cmd_buf); // ShadowPass
     }
 
     // Render Scene to the MSAA HDR RT ------------------------------------------------
@@ -654,7 +675,7 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
     SetPerfMarkerBegin(cmd_buf, "Color pass");
 
     VkRect2D renderArea = { 0, 0, pState->renderWidth, pState->renderHeight };
-    if (pPerFrame != NULL)
+    if (m_pGltfPBR && pPerFrame != NULL)
     {
         std::vector<GltfPbrPass::BatchList> opaque, transparent;
         m_pGltfPBR->BuildBatchLists(&opaque, &transparent);
@@ -662,12 +683,12 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
         // Render opaque 
         //
         {
-            m_renderPassFullGBuffer.BeginPass(cmd_buf, renderArea);
+            m_renderPassFullGBufferWithClear.BeginPass(cmd_buf, renderArea);
 
             m_pGltfPBR->DrawBatchList(cmd_buf, &opaque);
             m_GPUTimer.GetTimeStamp(cmd_buf, "PBR Opaque");
 
-            m_renderPassFullGBuffer.EndPass(cmd_buf);
+            m_renderPassFullGBufferWithClear.EndPass(cmd_buf);
         }
 
         // Render skydome
@@ -722,9 +743,12 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
             {
                 if (pState->bDrawBoundingBoxes)
                 {
+                    SetPerfMarkerBegin(cmd_buf, "GLTF_BBOX");
+
                     m_pGltfBBox->Draw(cmd_buf, pPerFrame->mCameraCurrViewProj);
 
                     m_GPUTimer.GetTimeStamp(cmd_buf, "Bounding Box");
+                    SetPerfMarkerEnd(cmd_buf);
                 }
             }
 
@@ -754,8 +778,8 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
     }
     else
     {
-        m_renderPassFullGBuffer.BeginPass(cmd_buf, renderArea);
-        m_renderPassFullGBuffer.EndPass(cmd_buf);
+        m_renderPassFullGBufferWithClear.BeginPass(cmd_buf, renderArea);
+        m_renderPassFullGBufferWithClear.EndPass(cmd_buf);
         m_renderPassJustDepthAndHdr.BeginPass(cmd_buf, renderArea);
         m_renderPassJustDepthAndHdr.EndPass(cmd_buf);
     }
@@ -777,7 +801,7 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
     barrier[0].image = m_GBuffer.m_HDR.Resource();
     vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 1, barrier);
 
-    SetPerfMarkerEnd(cmd_buf);
+    SetPerfMarkerEnd(cmd_buf); // Color pass
 
     // Post proc---------------------------------------------------------------------------
     //
@@ -847,20 +871,18 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
         SetPerfMarkerBegin(cmd_buf, "tonemapping");
 
         // prepare render pass
-        {
-            VkRenderPassBeginInfo rp_begin = {};
-            rp_begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-            rp_begin.pNext = NULL;
-            rp_begin.renderPass = m_render_pass_tonemap;
-            rp_begin.framebuffer = m_frameBuffer_tonemap;
-            rp_begin.renderArea.offset.x = 0;
-            rp_begin.renderArea.offset.y = 0;
-            rp_begin.renderArea.extent.width = pState->renderWidth;
-            rp_begin.renderArea.extent.height = pState->renderHeight;
-            rp_begin.clearValueCount = 0;
-            rp_begin.pClearValues = NULL;
-            vkCmdBeginRenderPass(cmd_buf, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
-        }
+        VkRenderPassBeginInfo rp_begin = {};
+        rp_begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        rp_begin.pNext = NULL;
+        rp_begin.renderPass = m_render_pass_tonemap;
+        rp_begin.framebuffer = m_frameBuffer_tonemap;
+        rp_begin.renderArea.offset.x = 0;
+        rp_begin.renderArea.offset.y = 0;
+        rp_begin.renderArea.extent.width = pState->renderWidth;
+        rp_begin.renderArea.extent.height = pState->renderHeight;
+        rp_begin.clearValueCount = 0;
+        rp_begin.pClearValues = NULL;
+        vkCmdBeginRenderPass(cmd_buf, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
 
         vkCmdSetScissor(cmd_buf, 0, 1, &m_scissor);
         vkCmdSetViewport(cmd_buf, 0, 1, &m_viewport);
@@ -901,8 +923,21 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
     cmd_buf = m_CommandListRing.GetNewCommandList();
 
     {
+        VkCommandBufferBeginInfo cmd_buf_info;
+        cmd_buf_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        cmd_buf_info.pNext = NULL;
+        cmd_buf_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        cmd_buf_info.pInheritanceInfo = NULL;
+        VkResult res = vkBeginCommandBuffer(cmd_buf, &cmd_buf_info);
+        assert(res == VK_SUCCESS);
+    }
+
+    {
+        SetPerfMarkerBegin(cmd_buf, "CAS");
+
         m_CAS.Upscale(cmd_buf, m_tonemapTexture, m_tonemapSRV, pState->CASState != CAS_State_NoCas, pState->usePackedMath, pState->CASState);
         m_GPUTimer.GetTimeStamp(cmd_buf, "CAS");
+
         SetPerfMarkerEnd(cmd_buf);
 
         // prepare render pass
@@ -925,22 +960,24 @@ void CAS_Renderer::OnRender(State *pState, SwapChain *pSwapChain)
         vkCmdSetViewport(cmd_buf, 0, 1, &m_finalViewport);
 
         m_CAS.DrawToSwapChain(cmd_buf, m_tonemapSRV, pState->CASState != CAS_State_NoCas);
+
+        // Render HUD  ------------------------------------------------------------------------
+        //
+        {
+            SetPerfMarkerBegin(cmd_buf, "ImGUI");
+
+            m_ImGUI.Draw(cmd_buf);
+            m_GPUTimer.GetTimeStamp(cmd_buf, "ImGUI Rendering");
+
+            SetPerfMarkerEnd(cmd_buf);
+        }
+
+        m_GPUTimer.OnEndFrame();
+
+        vkCmdEndRenderPass(cmd_buf);
     }
 
-    // Render HUD  ------------------------------------------------------------------------
-    //
-    {
-        SetPerfMarkerBegin(cmd_buf, "ImGUI");
-        m_ImGUI.Draw(cmd_buf);
-        m_GPUTimer.GetTimeStamp(cmd_buf, "ImGUI Rendering");
-        SetPerfMarkerEnd(cmd_buf);
-    }
-
-    SetPerfMarkerEnd(cmd_buf);
-
-    m_GPUTimer.OnEndFrame();
-
-    vkCmdEndRenderPass(cmd_buf);
+    SetPerfMarkerEnd(cmd_buf); // OnRender
 
     VkResult res = vkEndCommandBuffer(cmd_buf);
     assert(res == VK_SUCCESS);

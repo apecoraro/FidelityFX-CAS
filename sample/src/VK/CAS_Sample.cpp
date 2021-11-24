@@ -519,8 +519,6 @@ int WINAPI WinMain(HINSTANCE hInstance,
     int nCmdShow)
 {
     LPCSTR Name = "CAS VK Sample v1.0";
-    uint32_t Width = 1280;
-    uint32_t Height = 720;
 
     // create new Vulkan sample
     return RunFramework(hInstance, lpCmdLine, nCmdShow, new CAS_Sample(Name));

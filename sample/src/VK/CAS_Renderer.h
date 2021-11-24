@@ -83,8 +83,8 @@ public:
 private:
     Device                         *m_pDevice;
 
-    uint32_t                        m_Width;
-    uint32_t                        m_Height;
+    uint32_t                        m_Width = 0u;
+    uint32_t                        m_Height = 0u;
 
     VkRect2D                        m_scissor;
     VkRect2D                        m_finalScissor;
@@ -103,6 +103,7 @@ private:
     AsyncPool                       m_asyncPool;
     // GBuffer and render passes
     GBuffer                         m_GBuffer;
+    GBufferRenderPass               m_renderPassFullGBufferWithClear;
     GBufferRenderPass               m_renderPassFullGBuffer;
     GBufferRenderPass               m_renderPassJustDepthAndHdr;
 
