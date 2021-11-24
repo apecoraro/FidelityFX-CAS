@@ -56,6 +56,7 @@ void CAS_Sample::OnParseCommandLine(LPSTR lpCmdLine, uint32_t* pWidth, uint32_t*
 void CAS_Sample::OnCreate()
 {
     //init the shader compiler
+    InitDirectXCompiler();
     CreateShaderCache();
 
     // Create a instance of the renderer and initialize it, we need to do that for each GPU
